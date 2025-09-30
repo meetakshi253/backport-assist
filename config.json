@@ -1,0 +1,39 @@
+{
+    "start": "6.14",
+    "end": "6.17",
+    "mainline_repo": "/home/met/Desktop/linux",
+    "output_file": "out/mainline.json",
+    "default_branch": "master",
+    "emails": [
+        "sprasad@microsoft.com",
+        "pc@manguebit.org",
+        "pc@manguebit.com",
+        "bharathsm@microsoft.com",
+        "henrique.carvalho@suse.com"
+    ],
+    "keywords": [
+        "CVE",
+        "directory lease",
+        "directory leases",
+        "cfid",
+        "dirent",
+        "dir lease",
+        "cached dir",
+        "multichannel",
+        "multi channel",
+        "perf improvement",
+        "performance improvement",
+        "regression",
+        "xfstest",
+        "null pointer",
+        "memory leak",
+        "deadlock",
+        "use-after-free",
+        "use after free",
+        "oops",
+        "panic",
+        "crash",
+        "race",
+        "UAF"
+    ]
+}
