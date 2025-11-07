@@ -8,7 +8,15 @@ import subprocess
 from typing import List, Dict, Optional, Set
 from dataclasses import dataclass
 from datetime import datetime
+import pandas as pd
 
+NOFILTER = False
+
+CIFS_COMMIT_PATHS = [
+    "fs/cifs/",
+    "fs/smb/client/",
+    "fs/netfs/"
+]
 
 @dataclass
 class Commit:
@@ -81,7 +89,7 @@ class GitRepo:
             except:
                 pass
 
-            # Try finding Linus's release commit
+            # Try finding Linus' release commit
             try:
                 # Look for exact "Linux x.y" commit by Linus
                 commits = self.run_git([
@@ -98,41 +106,49 @@ class GitRepo:
                     commit_msg = self.run_git(
                         ["log", "-1", "--format=%s", commits.split('\n')[0]])
                     if commit_msg.strip() == f"Linux {version}":
+                        print(f"Found release commit for version {version}: {commits.split('\n')[0]}", file=sys.stderr)
                         return commits.split('\n')[0]
                 return None
             except:
                 return None
 
-    def get_commits(self, start_ref: str, end_ref: str = "HEAD") -> List[Commit]:
-        """Get all commits between start_ref and end_ref.
+    def get_cifs_commits(self, start_ref: str, end_ref: str = "HEAD") -> List[Commit]:
+        """Get all commits between start_ref and end_ref, relevant to cifs
 
-        The range is exclusive of start_ref and inclusive of end_ref.
+        The range is exclusive of start_ref and inclusive of end_ref
+        in the paths of interest.
         For example, with start=v6.14 and end=v6.15, this will return
         all commits that went into 6.15 (everything after 6.14 tag up
         to and including 6.15 tag)."""
+        print(f"Getting CIFS commits from {start_ref} to {end_ref}...", file=sys.stderr)
         format_str = "%H%x00%an%x00%ae%x00%at%x00%s%x00%b%x1e"
-        log_data = self.run_git([
-            "log",
-            f"{start_ref}..{end_ref}",
-            "--format=" + format_str,
-            "--reverse",
-            "--no-merges"
-        ])
-
         commits = []
-        for entry in log_data.split("\x1e"):
-            if not entry.strip():
-                continue
-            parts = entry.split("\x00")
-            if len(parts) >= 6:
-                commits.append(Commit(
-                    hash=parts[0],
-                    author_name=parts[1],
-                    author_email=parts[2],
-                    date=datetime.fromtimestamp(int(parts[3])),
-                    subject=parts[4],
-                    body=parts[5]
-                ))
+        for path in CIFS_COMMIT_PATHS:
+            print(f"Scanning path: {path}", file=sys.stderr)
+            log_data = self.run_git([
+                "log",
+                f"{start_ref}..{end_ref}",
+                "--format=" + format_str,
+                "--reverse",
+                "--no-merges",
+                "--", path
+            ])
+
+            print(f"Raw log data length: {len(log_data.split("\x1e"))}", file=sys.stderr)
+
+            for entry in log_data.split("\x1e"):
+                if not entry.strip():
+                    continue
+                parts = entry.split("\x00")
+                if len(parts) >= 6:
+                    commits.append(Commit(
+                        hash=parts[0],
+                        author_name=parts[1],
+                        author_email=parts[2],
+                        date=datetime.fromtimestamp(int(parts[3])),
+                        subject=parts[4],
+                        body=parts[5]
+                    ))
         return commits
 
 
@@ -156,6 +172,31 @@ class CommitScanner:
     def is_marked_for_stable(self, commit: Commit) -> bool:
         """Check if commit is marked for stable."""
         return ("stable@vger.kernel.org" in commit.body)
+
+    def commits_to_df(self, commits: List[Commit], reasons: List[str] | None) -> pd.DataFrame:
+        """Convert list of commits to a pandas DataFrame."""
+        df = pd.DataFrame(columns=[
+            'release', 'commit', 'patch_name', 'author_name', 'author_email', 'date', 'body', 'reasons'
+        ])
+
+        if reasons is None:
+            reasons = [[] for _ in commits]
+
+        for c, r in zip(commits, reasons):
+            new_row = [{
+                'release': "xyz",
+                'commit': c.hash,
+                'patch_name': c.subject,
+                'author_name': c.author_name,
+                'author_email': c.author_email,
+                'date': c.date,
+                'body': c.body,
+                'reasons': r,
+                'priority': "",
+                'comments': ""
+            }]
+            df = df._append(new_row, ignore_index=True)
+        return df
 
     def is_important_first_pass(self, commit: Commit) -> tuple[bool, List[str]]:
         """First pass filter for important commits.
@@ -218,13 +259,13 @@ class CommitScanner:
             end_commit = "HEAD"
 
         # Get all commits in range
-        all_commits = self.repo.get_commits(start_commit, end_commit)
-        print(f"Found {len(all_commits)} total commits", file=sys.stderr)
+        cifs_commits = self.repo.get_cifs_commits(start_commit, end_commit)
+        print(f"Found {len(cifs_commits)} total cifs-relevant commits", file=sys.stderr)
 
-        # Filter CIFS commits
-        cifs_commits = [c for c in all_commits if self.is_cifs_commit(c)]
-        print(f"Found {len(cifs_commits)} CIFS-related commits",
-              file=sys.stderr)
+        if NOFILTER:
+            print("NOFILTER is set - returning all CIFS commits as important",
+                  file=sys.stderr)
+            return self.commits_to_df(cifs_commits, None)
 
         # First pass - direct importance
         important_commits = []
@@ -275,24 +316,25 @@ class CommitScanner:
             print(
                 f"\nFound {len(stable_commits)} commits marked for stable", file=sys.stderr)
 
-        # Convert to serializable format
-        return [{
-            'hash': c[0].hash.strip(),
-            'author': c[0].author_name.strip(),
-            'email': c[0].author_email.strip(),
-            'date': c[0].date.isoformat(),
-            'subject': c[0].subject.strip().replace('\n', ' '),
-            'reasons': c[1],
-            'marked_for_stable': self.is_marked_for_stable(c[0])
-        } for c in important_commits]
+        # Create a dataframe-like output. TODO: add kernel version information
+        return self.commits_to_df([c[0] for c in important_commits], [c[1] for c in important_commits])
 
 
 def main():
-    if len(sys.argv) != 2:
+    if len(sys.argv) > 3:
         print(f"Usage: {sys.argv[0]} <config.json>", file=sys.stderr)
         sys.exit(1)
-
+    
     scanner = CommitScanner(sys.argv[1])
+    if len(sys.argv) == 3:
+        # Override the filtering
+        if sys.argv[2] == "--no-filter":
+            global NOFILTER
+            NOFILTER = True
+        else:
+            print(f"Unknown option: {sys.argv[2]}", file=sys.stderr)
+            sys.exit(1)
+    
     important_commits = scanner.scan_commits()
 
     # Get output file from config or use stdout
@@ -300,12 +342,12 @@ def main():
     if output_file:
         output_file = os.path.abspath(output_file)
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        with open(output_file, 'w') as f:
-            json.dump(important_commits, f, indent=2)
+        important_commits.to_csv(output_file, index=True)
         print(f"\nResults written to: {output_file}", file=sys.stderr)
+        print(f"Important commits: {len(important_commits)}", file=sys.stderr)
     else:
         # Output results to stdout if no file specified
-        json.dump(important_commits, sys.stdout, indent=2)
+        print(important_commits.to_csv(index=True))
 
 
 if __name__ == "__main__":
