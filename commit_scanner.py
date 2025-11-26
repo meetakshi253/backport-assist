@@ -43,12 +43,14 @@ class Commit:
 
 
 class GitRepo:
-    def __init__(self, repo_path: str, default_branch: str = "master"):
+    def __init__(self, repo_path: str, default_branch: str = "master", ref: str = None):
         self.repo_path = repo_path
         self.default_branch = default_branch
+        self.ref = ref  # Optional specific ref (tag or commit hash) to use
         if not os.path.exists(os.path.join(repo_path, ".git")):
             raise ValueError(f"Not a git repository: {repo_path}")
-        self.ensure_clean_state()
+        if not self.ref:
+            self.ensure_clean_state()
 
     def ensure_clean_state(self):
         """Ensure the repo is in a clean state and on the default branch."""
@@ -129,14 +131,16 @@ class GitRepo:
         For example, with start=v6.14 and end=v6.15, this will return
         all commits that went into 6.15 (everything after 6.14 tag up
         to and including 6.15 tag)."""
-        logger.info(f"Getting CIFS commits from {start_ref} to {end_ref}...")
+        # Use self.ref if specified, otherwise use end_ref
+        actual_end_ref = self.ref if self.ref else end_ref
+        logger.info(f"Getting CIFS commits from {start_ref} to {actual_end_ref}...")
         format_str = "%H%x00%an%x00%ae%x00%at%x00%s%x00%b%x1e"
         commits = []
         for path in CIFS_COMMIT_PATHS:
             logger.debug(f"Scanning path: {path}")
             log_data = self.run_git([
                 "log",
-                f"{start_ref}..{end_ref}",
+                f"{start_ref}..{actual_end_ref}",
                 "--format=" + format_str,
                 "--reverse",
                 "--no-merges",
@@ -165,9 +169,13 @@ class CommitScanner:
     def __init__(self, config: Dict):
         self.config = config
 
+        # Get optional ref from config
+        repo_ref = config.get('mainline_repo_ref')
+        
         self.repo = GitRepo(
             self.config['mainline_repo'],
-            self.config.get('default_branch', 'master')
+            self.config.get('default_branch', 'master'),
+            ref=repo_ref
         )
         self.important_emails = set(self.config['emails'])
         self.keywords = [k.lower() for k in self.config['keywords']]
@@ -318,6 +326,21 @@ class CommitScanner:
         return self.commits_to_df([c[0] for c in important_commits], [c[1] for c in important_commits])
 
 
+def parse_repo_spec(repo_spec: str) -> tuple[str, str]:
+    """Parse repository specification in PATH:TAG format.
+    
+    Args:
+        repo_spec: Repository path, optionally followed by :TAG where TAG is a git tag or commit hash
+        
+    Returns:
+        tuple: (repo_path, ref) where ref is None if not specified
+    """
+    if ':' in repo_spec:
+        parts = repo_spec.split(':', 1)
+        return parts[0], parts[1]
+    return repo_spec, None
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description='Scan Linux kernel commits for important CIFS/SMB changes.',
@@ -333,6 +356,10 @@ Usage Patterns:
      %(prog)s --start 6.6 --mainline-repo /path/to/linux
      %(prog)s --start 6.6 --end 6.15 --mainline-repo /path/to/linux \\
               --output-file out/commits.json --output-format json
+  
+  3. Using specific git tag or commit in repository:
+     %(prog)s --start 6.6 --mainline-repo /path/to/linux:v6.15
+     %(prog)s --start 6.6 --mainline-repo /path/to/linux:abc123def
   
   3. With filtering options (when not using --config):
      %(prog)s --start 6.6 --mainline-repo /path/to/linux \\
@@ -352,6 +379,10 @@ Examples:
            --keywords CVE "use-after-free" regression \\
            --output-format csv
   
+  # Use specific git tag or commit as endpoint
+  %(prog)s --start 6.6 --mainline-repo ~/linux:v6.15
+  %(prog)s --start 6.6 --mainline-repo ~/linux:abc123def456
+  
   # Use config file with explicit no-filter and output to JSON file
   %(prog)s --config config.json --no-filter --output-file out/commits.json
         ''')
@@ -367,7 +398,8 @@ Examples:
     parser.add_argument('--end', type=str, default='HEAD', metavar='VERSION',
                         help='end version (inclusive), defaults to HEAD')
     parser.add_argument('--mainline-repo', type=str, metavar='PATH',
-                        help='path to mainline Linux kernel repository - required if not using --config')
+                        help='path to mainline Linux kernel repository - required if not using --config. '
+                             'Can specify PATH:TAG format where TAG is a git tag or commit hash to use instead of HEAD')
     parser.add_argument('--output-file', type=str, metavar='PATH',
                         help='output file path (prints to stdout if not specified)')
     parser.add_argument('--output-format', type=str, choices=['csv', 'json'], default='json', metavar='FORMAT',
@@ -406,10 +438,14 @@ def load_config(args) -> tuple[Dict, bool]:
             logger.error("--mainline-repo is required when not using --config")
             sys.exit(1)
         
+        # Parse mainline_repo to extract path and optional ref
+        repo_path, repo_ref = parse_repo_spec(args.mainline_repo)
+        
         config = {
             'start': args.start,
             'end': args.end,
-            'mainline_repo': args.mainline_repo,
+            'mainline_repo': repo_path,
+            'mainline_repo_ref': repo_ref,  # Store the ref separately
             'default_branch': args.default_branch,
             'emails': args.emails if args.emails else [],
             'keywords': args.keywords if args.keywords else [],

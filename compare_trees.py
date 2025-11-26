@@ -64,8 +64,9 @@ class CommitInfo:
 
 
 class GitRepo:
-    def __init__(self, repo_path: str):
+    def __init__(self, repo_path: str, ref: str = None):
         self.repo_path = repo_path
+        self.ref = ref  # Optional specific ref (tag or commit hash) to use
         if not os.path.exists(os.path.join(repo_path, ".git")):
             raise ValueError(f"Not a git repository: {repo_path}")
 
@@ -113,15 +114,19 @@ class GitRepo:
         except:
             return "unknown"
 
-    def get_commits_since(self, date: datetime, branchname: str) -> List[Tuple[str, str]]:
+    def get_commits_since(self, date: datetime, branchname: str = None) -> List[Tuple[str, str]]:
         """Get all relevant commits since the given date, returns list of (hash, title) tuples."""
         format_str = "%H%x00%s"
         commits = []
+        
+        # Use self.ref if specified, otherwise use provided branchname
+        ref_to_use = self.ref if self.ref else branchname
+        
         for path in CIFS_COMMIT_PATHS:
             logger.debug(f"Scanning path: {path}")
             log_data = self.run_git([
                 "log",
-                branchname,
+                ref_to_use,
                 f"--since={date.isoformat()}",
                 "--format=" + format_str,
                 "--no-merges"  # Exclude merge commits
@@ -192,9 +197,13 @@ def load_commits_from_file(file_path: str = None) -> List[Dict]:
         sys.exit(1)
 
 
-def process_commits(input_path: str = None, ref_repo_path: str = None, target_repo_path: str = None, similarity_threshold: float = 0.8) -> List[CommitInfo]:
-    ref_repo = GitRepo(ref_repo_path)
-    target_repo = GitRepo(target_repo_path)
+def process_commits(input_path: str = None, ref_repo_spec: str = None, target_repo_spec: str = None, similarity_threshold: float = 0.8) -> List[CommitInfo]:
+    # Parse repo specifications
+    ref_repo_path, ref_repo_ref = parse_repo_spec(ref_repo_spec)
+    target_repo_path, target_repo_ref = parse_repo_spec(target_repo_spec)
+    
+    ref_repo = GitRepo(ref_repo_path, ref=ref_repo_ref)
+    target_repo = GitRepo(target_repo_path, ref=target_repo_ref)
     commits = []
     earliest_date = None
 
@@ -315,6 +324,21 @@ def get_repo_name(repo_path: str) -> str:
     return os.path.basename(repo_path)
 
 
+def parse_repo_spec(repo_spec: str) -> tuple[str, str]:
+    """Parse repository specification in PATH:TAG format.
+    
+    Args:
+        repo_spec: Repository path, optionally followed by :TAG where TAG is a git tag or commit hash
+        
+    Returns:
+        tuple: (repo_path, ref) where ref is None if not specified
+    """
+    if ':' in repo_spec:
+        parts = repo_spec.split(':', 1)
+        return parts[0], parts[1]
+    return repo_spec, None
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description='Compare commits between mainline and target kernel repositories to identify backport status.',
@@ -324,6 +348,12 @@ Usage Patterns:
   
   Compare commits from input file:
   %(prog)s --input-file commits.json --mainline-repo /path/to/mainline --target-repo /path/to/stable
+  
+  Using specific git tag or commit in repositories:
+  %(prog)s --input-file commits.json --mainline-repo /path/to/mainline:v6.15 \\
+           --target-repo /path/to/stable:linux-6.6.y
+  %(prog)s --input-file commits.json --mainline-repo /path/to/mainline:abc123 \\
+           --target-repo /path/to/stable:def456
   
   Read commits from stdin:
   cat commits.json | %(prog)s --mainline-repo /path/to/mainline --target-repo /path/to/stable
@@ -343,13 +373,17 @@ Examples:
   %(prog)s --input-file out/mainline.json --mainline-repo ~/linux-mainline \\
            --target-repo ~/linux-6.6-stable
   
+  # Use specific tags/commits for comparison
+  %(prog)s --input-file commits.json --mainline-repo ~/linux:v6.15 \\
+           --target-repo ~/stable:linux-6.6.y
+  
   # Read from stdin and output as JSON
   cat commits.json | %(prog)s --mainline-repo ~/mainline \\
       --target-repo ~/stable --output-format json
   
-  # Pipeline from commit_scanner.py
-  python commit_scanner.py --start 6.6 --mainline-repo ~/mainline | \\
-      %(prog)s --mainline-repo ~/mainline --target-repo ~/stable --verbose
+  # Pipeline from commit_scanner.py with specific refs
+  python commit_scanner.py --start 6.6 --mainline-repo ~/mainline:v6.15 | \\
+      %(prog)s --mainline-repo ~/mainline:v6.15 --target-repo ~/stable:abc123 --verbose
   
   # Specify output file
   %(prog)s --input-file commits.json --mainline-repo ~/mainline \\
@@ -359,9 +393,11 @@ Examples:
     parser.add_argument('--input-file', type=str, metavar='FILE',
                         help='input file containing commits (JSON or CSV format). If not specified, reads from stdin')
     parser.add_argument('--mainline-repo', type=str, required=True, metavar='PATH',
-                        help='path to mainline/reference Linux kernel repository')
+                        help='path to mainline/reference Linux kernel repository. '
+                             'Can specify PATH:TAG format where TAG is a git tag or commit hash to use instead of current HEAD')
     parser.add_argument('--target-repo', type=str, required=True, metavar='PATH',
-                        help='path to target Linux kernel repository (e.g., stable branch)')
+                        help='path to target Linux kernel repository (e.g., stable branch). '
+                             'Can specify PATH:TAG format where TAG is a git tag or commit hash to use instead of current HEAD')
     parser.add_argument('--output-file', type=str, metavar='PATH',
                         help='output file path (prints to stdout if not specified)')
     parser.add_argument('--output-format', type=str, choices=['csv', 'json'], default='json', metavar='FORMAT',
@@ -386,14 +422,18 @@ def main():
     out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'out')
     os.makedirs(out_dir, exist_ok=True)
 
-    # Get repo names and current branches
-    ref_repo = GitRepo(args.mainline_repo)
-    target_repo = GitRepo(args.target_repo)
+    # Parse repo specs to get paths and refs
+    ref_repo_path, ref_repo_ref = parse_repo_spec(args.mainline_repo)
+    target_repo_path, target_repo_ref = parse_repo_spec(args.target_repo)
 
-    ref_name = get_repo_name(args.mainline_repo)
-    target_name = get_repo_name(args.target_repo)
-    ref_branch = ref_repo.get_current_branch()
-    target_branch = target_repo.get_current_branch()
+    # Get repo names and current branches
+    ref_repo = GitRepo(ref_repo_path, ref=ref_repo_ref)
+    target_repo = GitRepo(target_repo_path, ref=target_repo_ref)
+
+    ref_name = get_repo_name(ref_repo_path)
+    target_name = get_repo_name(target_repo_path)
+    ref_branch = ref_repo_ref if ref_repo_ref else ref_repo.get_current_branch()
+    target_branch = target_repo_ref if target_repo_ref else target_repo.get_current_branch()
 
     logger.info(f"Reference repository: {ref_name} (branch: {ref_branch})")
     logger.info(f"Target repository: {target_name} (branch: {target_branch})")

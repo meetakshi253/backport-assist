@@ -38,6 +38,10 @@ python commit_scanner.py --start 6.6 --end HEAD \
 python commit_scanner.py --start 6.6 --mainline-repo /path/to/linux \
     --emails user@example.com --keywords CVE \
     --no-filter --output-format csv
+
+# Use specific git tag or commit as endpoint
+python commit_scanner.py --start 6.6 --mainline-repo /path/to/linux:v6.15
+python commit_scanner.py --start 6.6 --mainline-repo /path/to/linux:abc123def
 ```
 
 **Options:**
@@ -45,7 +49,7 @@ python commit_scanner.py --start 6.6 --mainline-repo /path/to/linux \
 - `--no-filter`: Return all CIFS commits without filtering
 - `--start VERSION`: Start version (exclusive) - required if not using --config
 - `--end VERSION`: End version (inclusive), defaults to HEAD
-- `--mainline-repo PATH`: Path to mainline Linux kernel repository - required if not using --config
+- `--mainline-repo PATH[:TAG]`: Path to mainline Linux kernel repository - required if not using --config. Can specify PATH:TAG format where TAG is a git tag or commit hash to use instead of HEAD
 - `--output-file PATH`: Output file path
 - `--output-format FORMAT`: Output format: csv or json (default: json)
 - `--default-branch BRANCH`: Default git branch (defaults to master)
@@ -67,6 +71,11 @@ python compare_trees.py --input-file commits.csv \
     --mainline-repo /path/to/mainline --target-repo /path/to/stable \
     --output-file results.json --output-format json
 
+# Use specific git tags or commits for comparison
+python compare_trees.py --input-file commits.json \
+    --mainline-repo /path/to/mainline:v6.15 \
+    --target-repo /path/to/stable:linux-6.6.y
+
 # With verbose logging
 python compare_trees.py --input-file commits.json \
     --mainline-repo /path/to/mainline --target-repo /path/to/stable --verbose
@@ -81,12 +90,17 @@ cat commits.json | python compare_trees.py \
 # Pipeline from commit_scanner.py
 python commit_scanner.py --start 6.6 --mainline-repo ~/mainline | \
     python compare_trees.py --mainline-repo ~/mainline --target-repo ~/stable
+
+# Pipeline with specific refs
+python commit_scanner.py --start 6.6 --mainline-repo ~/mainline:v6.15 | \
+    python compare_trees.py --mainline-repo ~/mainline:v6.15 \
+    --target-repo ~/stable:abc123
 ```
 
 **Options:**
 - `--input-file FILE`: Input file containing commits (JSON or CSV format). If not specified, reads from stdin
-- `--mainline-repo PATH`: Path to mainline/reference Linux kernel repository (required)
-- `--target-repo PATH`: Path to target Linux kernel repository, e.g., stable branch (required)
+- `--mainline-repo PATH[:TAG]`: Path to mainline/reference Linux kernel repository (required). Can specify PATH:TAG format where TAG is a git tag or commit hash to use instead of current HEAD
+- `--target-repo PATH[:TAG]`: Path to target Linux kernel repository, e.g., stable branch (required). Can specify PATH:TAG format where TAG is a git tag or commit hash to use instead of current HEAD
 - `--output-file PATH`: Output file path (prints to stdout if not specified)
 - `--output-format FORMAT`: Output format: csv or json (default: json)
 - `--verbose`: Enable verbose/debug logging
@@ -127,4 +141,9 @@ python commit_scanner.py --start 6.6 --mainline-repo ../linux-mainline \
     --emails user@example.com --keywords CVE | \
     python compare_trees.py --mainline-repo ../linux-mainline \
     --target-repo ../linux-6.6-stable --output-file backport-status.json
+
+# Use specific tags/commits for comparison
+python commit_scanner.py --start 6.6 --mainline-repo ../linux-mainline:v6.15 | \
+    python compare_trees.py --mainline-repo ../linux-mainline:v6.15 \
+    --target-repo ../linux-6.6-stable:linux-6.6.y --output-file backport-status.json
 ```
