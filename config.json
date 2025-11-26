@@ -3,6 +3,7 @@
     "end": "HEAD",
     "mainline_repo": "/home/met/mainline/linux",
     "output_file": "out/mainline.csv",
+    "output_format": "json",
     "default_branch": "master",
     "emails": [
         "sprasad@microsoft.com",
