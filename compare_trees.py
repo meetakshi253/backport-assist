@@ -102,21 +102,23 @@ class GitRepo:
         # Use self.ref if specified, otherwise use provided branchname
         ref_to_use = self.ref if self.ref else branchname
         
-        for path in self.paths:
-            logger.debug(f"Scanning path: {path}")
-            log_data = self.run_git([
-                "log",
-                ref_to_use,
-                f"--since={date.isoformat()}",
-                "--format=" + format_str,
-                "--no-merges"  # Exclude merge commits
-                ,"--", path
-            ])
-            for line in log_data.split('\n'):
-                if not line.strip():
-                    continue
-                commit_hash, title = line.split('\x00')
-                commits.append((commit_hash, title))
+        logger.debug(f"Scanning paths: {self.paths}")
+        
+        # Run git log once with all paths
+        log_data = self.run_git([
+            "log",
+            ref_to_use,
+            f"--since={date.isoformat()}",
+            "--format=" + format_str,
+            "--no-merges",  # Exclude merge commits
+            "--"
+        ] + self.paths)
+        
+        for line in log_data.split('\n'):
+            if not line.strip():
+                continue
+            commit_hash, title = line.split('\x00')
+            commits.append((commit_hash, title))
         return commits
 
 
