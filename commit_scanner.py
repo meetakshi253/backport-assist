@@ -36,6 +36,7 @@ class Commit:
     subject: str
     body: str
     date: datetime
+    release: str = None
 
     @property
     def message(self) -> str:
@@ -78,6 +79,31 @@ class GitRepo:
             logger.error(f"Git command failed: {' '.join(['git'] + args)}")
             logger.error(f"Error: {e.stderr}")
             sys.exit(1)
+
+    def get_release_tag(self, commit_hash: str) -> Optional[str]:
+        """Get the first release tag that contains this commit."""
+        try:
+            logger.debug(f"Getting release tag for commit {commit_hash}")
+            result = self.run_git([
+                "tag",
+                "--sort=creatordate",
+                "--contains", commit_hash
+            ])
+            if not result:
+                return ""
+            
+            # Filter for version tags matching v[1-9]*\.[0-9]* (e.g., v6.12, v6.12.1)
+            # Exclude rc, pre-release, or other suffixes
+            pattern = re.compile(r'^v[1-9][0-9]*\.[0-9]+(\.[0-9]+)*$')
+            for tag in result.split('\n'):
+                tag = tag.strip()
+                if tag and pattern.match(tag):
+                    logger.debug(f"Got release tag for commit {commit_hash}: {tag}")
+                    return tag
+            return ""
+        except:
+            logger.debug(f"Failed to get release tag for commit {commit_hash}")
+            return ""
 
     def find_version_commit(self, version: str) -> Optional[str]:
         """Find commit hash for a kernel version, trying both tag and release message."""
@@ -136,32 +162,53 @@ class GitRepo:
         logger.info(f"Getting CIFS commits from {start_ref} to {actual_end_ref}...")
         format_str = "%H%x00%an%x00%ae%x00%at%x00%s%x00%b%x1e"
         commits = []
-        for path in CIFS_COMMIT_PATHS:
-            logger.debug(f"Scanning path: {path}")
-            log_data = self.run_git([
-                "log",
-                f"{start_ref}..{actual_end_ref}",
-                "--format=" + format_str,
-                "--reverse",
-                "--no-merges",
-                "--", path
-            ])
+        paths = CIFS_COMMIT_PATHS.copy()
+        paths.append("Makefile")  # Also add Makefile to track version bumps
+        logger.debug(f"Paths to scan: {paths}")
+        
+        # Run git log once with all paths
+        log_data = self.run_git([
+            "log",
+            f"{start_ref}..{actual_end_ref}",
+            "--format=" + format_str,
+            "--reverse",
+            "--no-merges",
+            "--"
+        ] + paths)
 
-            logger.debug(f"Raw log data length: {len(log_data.split("\x1e"))}")
+        logger.debug(f"Raw log data length: {len(log_data.split('\x1e'))}")
 
-            for entry in log_data.split("\x1e"):
-                if not entry.strip():
+        # Cache the current release tag to avoid repeated git calls
+        current_release = None
+        
+        for entry in log_data.split("\x1e"):
+            if not entry.strip():
+                continue
+            parts = entry.split("\x00")
+            if len(parts) >= 6:
+                commit_hash = parts[0].strip()
+                commit_subject = parts[4].strip()
+
+                # Skip Makefile version bump commits
+                if re.match(r'Linux \d+\.\d+(\.\d+)?$', commit_subject):
+                    logger.debug(f"Skipping Makefile version bump commit: {commit_hash}: {commit_subject}")
+                    current_release = None  # Reset cached release
                     continue
-                parts = entry.split("\x00")
-                if len(parts) >= 6:
-                    commits.append(Commit(
-                        hash=parts[0].strip(),
-                        author_name=parts[1].strip(),
-                        author_email=parts[2].strip(),
-                        date=datetime.fromtimestamp(int(parts[3])),
-                        subject=parts[4].strip(),
-                        body=parts[5]
-                    ))
+
+                # Check if we need to update the cached release
+                if current_release is None:
+                    # First commit - get the release tag
+                    current_release = self.get_release_tag(commit_hash)
+                
+                commits.append(Commit(
+                    hash=commit_hash,
+                    author_name=parts[1].strip(),
+                    author_email=parts[2].strip(),
+                    date=datetime.fromtimestamp(int(parts[3])),
+                    subject=parts[4].strip(),
+                    body=parts[5],
+                    release=current_release
+                ))
         return commits
 
 
@@ -200,7 +247,7 @@ class CommitScanner:
 
         for c, r in zip(commits, reasons):
             new_row = [{
-                'release': "xyz",
+                'release': c.release if c.release else "",
                 'commit': c.hash,
                 'patch_name': c.subject,
                 'author_name': c.author_name,
