@@ -465,6 +465,7 @@ Examples:
 
 def load_config(args) -> tuple[Dict, bool]:
     """Load configuration from file or command-line arguments.
+    Command-line arguments override config file values.
     
     Returns:
         tuple: (config dict, should_apply_nofilter bool)
@@ -475,6 +476,25 @@ def load_config(args) -> tuple[Dict, bool]:
         # Load from config file
         with open(args.config) as f:
             config = json.load(f)
+        
+        # Override config file values with command-line arguments if provided
+        if args.start:
+            config['start'] = args.start
+        if args.end != 'HEAD':  # Only override if explicitly set
+            config['end'] = args.end
+        if args.mainline_repo:
+            repo_path, repo_ref = parse_repo_spec(args.mainline_repo)
+            config['mainline_repo'] = repo_path
+            config['mainline_repo_ref'] = repo_ref
+        if args.output_file:
+            config['output_file'] = args.output_file
+        if args.default_branch != 'master':  # Only override if explicitly set
+            config['default_branch'] = args.default_branch
+        if args.emails:
+            config['emails'] = args.emails
+        if args.keywords:
+            config['keywords'] = args.keywords
+        
         return config, should_apply_nofilter
     else:
         # Build config from command-line arguments

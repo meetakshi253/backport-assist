@@ -24,6 +24,10 @@ Scans the commit history of the Linux kernel to identify important CIFS/SMB comm
 ```bash
 python commit_scanner.py --config config.json
 python commit_scanner.py --config config.json --no-filter
+
+# Override config file options with command-line arguments
+python commit_scanner.py --config config.json --start 6.8 --output-file custom.json
+python commit_scanner.py --config config.json --mainline-repo /different/path:v6.15
 ```
 
 **Usage with command-line arguments:**
@@ -45,7 +49,7 @@ python commit_scanner.py --start 6.6 --mainline-repo /path/to/linux:abc123def
 ```
 
 **Options:**
-- `--config CONFIG_FILE`: Path to JSON configuration file
+- `--config CONFIG_FILE`: Path to JSON configuration file. Command-line arguments override config file values
 - `--no-filter`: Return all CIFS commits without filtering
 - `--start VERSION`: Start version (exclusive) - required if not using --config
 - `--end VERSION`: End version (inclusive), defaults to HEAD
@@ -60,6 +64,15 @@ Run `python commit_scanner.py --help` for more details.
 
 ### `compare_trees.py`
 Compares commits between mainline and target kernel repositories to identify backport status. Reads commit data from a file or stdin, checks if commits exist in the target repository, and outputs the backport status.
+
+**Usage with config file:**
+```bash
+python compare_trees.py --config config.json
+
+# Override config file options with command-line arguments
+python compare_trees.py --config config.json --output-file custom-results.json
+python compare_trees.py --config config.json --target-repo /different/stable:linux-6.6.y
+```
 
 **Usage with input file:**
 ```bash
@@ -98,9 +111,10 @@ python commit_scanner.py --start 6.6 --mainline-repo ~/mainline:v6.15 | \
 ```
 
 **Options:**
+- `--config FILE`: Path to JSON configuration file. Command-line arguments override config file values
 - `--input-file FILE`: Input file containing commits (JSON or CSV format). If not specified, reads from stdin
-- `--mainline-repo PATH[:TAG]`: Path to mainline/reference Linux kernel repository (required). Can specify PATH:TAG format where TAG is a git tag or commit hash to use instead of current HEAD
-- `--target-repo PATH[:TAG]`: Path to target Linux kernel repository, e.g., stable branch (required). Can specify PATH:TAG format where TAG is a git tag or commit hash to use instead of current HEAD
+- `--mainline-repo PATH[:TAG]`: Path to mainline/reference Linux kernel repository - required if not using --config. Can specify PATH:TAG format where TAG is a git tag or commit hash to use instead of current HEAD
+- `--target-repo PATH[:TAG]`: Path to target Linux kernel repository, e.g., stable branch - required if not using --config. Can specify PATH:TAG format where TAG is a git tag or commit hash to use instead of current HEAD
 - `--output-file PATH`: Output file path (prints to stdout if not specified)
 - `--output-format FORMAT`: Output format: csv or json (default: json)
 - `--verbose`: Enable verbose/debug logging

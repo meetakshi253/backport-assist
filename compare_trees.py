@@ -346,6 +346,10 @@ def parse_args():
         epilog='''\
 Usage Patterns:
   
+  Using a configuration file:
+  %(prog)s --config config.json
+  %(prog)s --config config.json --output-file custom-output.json
+  
   Compare commits from input file:
   %(prog)s --input-file commits.json --mainline-repo /path/to/mainline --target-repo /path/to/stable
   
@@ -390,13 +394,15 @@ Examples:
            --target-repo ~/stable --output-file backport-status.json
         ''')
     
+    parser.add_argument('--config', type=str, metavar='FILE',
+                        help='path to JSON configuration file')
     parser.add_argument('--input-file', type=str, metavar='FILE',
                         help='input file containing commits (JSON or CSV format). If not specified, reads from stdin')
-    parser.add_argument('--mainline-repo', type=str, required=True, metavar='PATH',
-                        help='path to mainline/reference Linux kernel repository. '
+    parser.add_argument('--mainline-repo', type=str, metavar='PATH',
+                        help='path to mainline/reference Linux kernel repository - required if not using --config. '
                              'Can specify PATH:TAG format where TAG is a git tag or commit hash to use instead of current HEAD')
-    parser.add_argument('--target-repo', type=str, required=True, metavar='PATH',
-                        help='path to target Linux kernel repository (e.g., stable branch). '
+    parser.add_argument('--target-repo', type=str, metavar='PATH',
+                        help='path to target Linux kernel repository (e.g., stable branch) - required if not using --config. '
                              'Can specify PATH:TAG format where TAG is a git tag or commit hash to use instead of current HEAD')
     parser.add_argument('--output-file', type=str, metavar='PATH',
                         help='output file path (prints to stdout if not specified)')
@@ -408,6 +414,51 @@ Examples:
     return parser.parse_args()
 
 
+def load_config(args) -> Dict:
+    """Load configuration from file or command-line arguments.
+    Command-line arguments override config file values.
+    
+    Returns:
+        config dict
+    """
+    if args.config:
+        # Load from config file
+        with open(args.config) as f:
+            config = json.load(f)
+        
+        # Override config file values with command-line arguments if provided
+        if args.input_file:
+            config['input_file'] = args.input_file
+        if args.mainline_repo:
+            config['mainline_repo'] = args.mainline_repo
+        if args.target_repo:
+            config['target_repo'] = args.target_repo
+        if args.output_file:
+            config['output_file'] = args.output_file
+        if args.output_format != 'json':  # Only override if explicitly set
+            config['output_format'] = args.output_format
+        
+        return config
+    else:
+        # Build config from command-line arguments
+        if not args.mainline_repo:
+            logger.error("--mainline-repo is required when not using --config")
+            sys.exit(1)
+        if not args.target_repo:
+            logger.error("--target-repo is required when not using --config")
+            sys.exit(1)
+        
+        config = {
+            'input_file': args.input_file,
+            'mainline_repo': args.mainline_repo,
+            'target_repo': args.target_repo,
+            'output_file': args.output_file,
+            'output_format': args.output_format,
+        }
+        
+        return config
+
+
 def main():
     args = parse_args()
     
@@ -415,16 +466,23 @@ def main():
     if args.verbose:
         logger.setLevel(logging.DEBUG)
     
-    # Pass args.input_file (which may be None) to process_commits
-    commits = process_commits(args.input_file, args.mainline_repo, args.target_repo)
+    # Load configuration
+    config = load_config(args)
+    
+    # Pass values from config
+    commits = process_commits(
+        config.get('input_file'),
+        config['mainline_repo'],
+        config['target_repo']
+    )
 
     # Create out directory if it doesn't exist
     out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'out')
     os.makedirs(out_dir, exist_ok=True)
 
     # Parse repo specs to get paths and refs
-    ref_repo_path, ref_repo_ref = parse_repo_spec(args.mainline_repo)
-    target_repo_path, target_repo_ref = parse_repo_spec(args.target_repo)
+    ref_repo_path, ref_repo_ref = parse_repo_spec(config['mainline_repo'])
+    target_repo_path, target_repo_ref = parse_repo_spec(config['target_repo'])
 
     # Get repo names and current branches
     ref_repo = GitRepo(ref_repo_path, ref=ref_repo_ref)
@@ -453,18 +511,21 @@ def main():
         })
 
     # Output results
-    if args.output_file:
+    output_file = config.get('output_file')
+    output_format = config.get('output_format', 'json')
+    
+    if output_file:
         # Write to file
-        if args.output_format == 'json':
-            with open(args.output_file, 'w') as f:
+        if output_format == 'json':
+            with open(output_file, 'w') as f:
                 json.dump(output_data, f, indent=2)
         else:  # csv
             df = pd.DataFrame(output_data)
-            df.to_csv(args.output_file, index=False)
-        logger.info(f"Results written to: {args.output_file}")
+            df.to_csv(output_file, index=False)
+        logger.info(f"Results written to: {output_file}")
     else:
         # Write to stdout
-        if args.output_format == 'json':
+        if output_format == 'json':
             print(json.dumps(output_data, indent=2))
         else:  # csv
             df = pd.DataFrame(output_data)
