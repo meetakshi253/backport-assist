@@ -21,34 +21,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Configure the subsystems to track
-TRACKED_SUBSYSTEMS = {
-    'cifs',    # CIFS/SMB client
-    'smb',     # SMB-related changes
-    'netfs',   # Network filesystem framework
-    'ksmbd',   # In-kernel SMB server
-}
-
 # Default paths for CIFS/SMB subsystem - can be overridden via config
 DEFAULT_COMMIT_PATHS = [
     "fs/cifs/",
     "fs/smb/client/",
     "fs/netfs/"
 ]
-
-
-def is_relevant_commit(title: str) -> bool:
-    """Check if a commit is relevant based on its title."""
-    # Convert title to lowercase for case-insensitive matching
-    title_lower = title.lower()
-
-    # Check if the commit title starts with any of our tracked subsystems
-    return any(
-        title_lower.startswith(f"{subsys}:") or
-        title_lower.startswith(f"[{subsys}]") or
-        title_lower.startswith(f"fs/{subsys}:")
-        for subsys in TRACKED_SUBSYSTEMS
-    )
 
 
 @dataclass
