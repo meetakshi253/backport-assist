@@ -46,6 +46,14 @@ python commit_scanner.py --start 6.6 --mainline-repo /path/to/linux \
 # Use specific git tag or commit as endpoint
 python commit_scanner.py --start 6.6 --mainline-repo /path/to/linux:v6.15
 python commit_scanner.py --start 6.6 --mainline-repo /path/to/linux:abc123def
+
+# Track different subsystem (e.g., btrfs filesystem)
+python commit_scanner.py --start 6.6 --mainline-repo /path/to/linux \\
+    --paths "fs/btrfs/" --emails btrfs-maintainer@example.com
+
+# Track multiple networking subsystems
+python commit_scanner.py --start 6.6 --mainline-repo /path/to/linux \\
+    --paths "net/core/" "drivers/net/ethernet/" --emails netdev@example.com
 ```
 
 **Options:**
@@ -59,6 +67,8 @@ python commit_scanner.py --start 6.6 --mainline-repo /path/to/linux:abc123def
 - `--default-branch BRANCH`: Default git branch (defaults to master)
 - `--emails EMAIL [EMAIL ...]`: Important author email addresses
 - `--keywords KEYWORD [KEYWORD ...]`: Keywords to search for in commit messages
+- `--paths PATH [PATH ...]`: Paths to track in the repository (defaults to CIFS/SMB paths: fs/cifs/, fs/smb/client/, fs/netfs/)
+- `--verbose`, `-v`: Enable verbose debug logging
 
 Run `python commit_scanner.py --help` for more details.
 
@@ -90,8 +100,13 @@ python compare_trees.py --input-file commits.json \
     --target-repo /path/to/stable:linux-6.6.y
 
 # With verbose logging
-python compare_trees.py --input-file commits.json \
+python compare_trees.py --input-file commits.json \\
     --mainline-repo /path/to/mainline --target-repo /path/to/stable --verbose
+
+# Track different subsystem paths
+python compare_trees.py --input-file commits.json \\
+    --mainline-repo /path/to/mainline --target-repo /path/to/stable \\
+    --paths "fs/btrfs/"
 ```
 
 **Usage with stdin (pipeline):**
@@ -117,6 +132,7 @@ python commit_scanner.py --start 6.6 --mainline-repo ~/mainline:v6.15 | \
 - `--target-repo PATH[:TAG]`: Path to target Linux kernel repository, e.g., stable branch - required if not using --config. Can specify PATH:TAG format where TAG is a git tag or commit hash to use instead of current HEAD
 - `--output-file PATH`: Output file path (prints to stdout if not specified)
 - `--output-format FORMAT`: Output format: csv or json (default: json)
+- `--paths PATH [PATH ...]`: Paths to track in the repository (defaults to CIFS/SMB paths: fs/cifs/, fs/smb/client/, fs/netfs/)
 - `--verbose`: Enable verbose/debug logging
 
 Run `python compare_trees.py --help` for more details.

@@ -5,6 +5,11 @@
     "output_file": "out/mainline.csv",
     "output_format": "json",
     "default_branch": "master",
+    "paths": [
+        "fs/cifs/",
+        "fs/smb/client/",
+        "fs/netfs/"
+    ],
     "emails": [
         "sprasad@microsoft.com",
         "pc@manguebit.org",

@@ -29,7 +29,8 @@ TRACKED_SUBSYSTEMS = {
     'ksmbd',   # In-kernel SMB server
 }
 
-CIFS_COMMIT_PATHS = [
+# Default paths for CIFS/SMB subsystem - can be overridden via config
+DEFAULT_COMMIT_PATHS = [
     "fs/cifs/",
     "fs/smb/client/",
     "fs/netfs/"
@@ -64,9 +65,10 @@ class CommitInfo:
 
 
 class GitRepo:
-    def __init__(self, repo_path: str, ref: str = None):
+    def __init__(self, repo_path: str, ref: str = None, paths: List[str] = None):
         self.repo_path = repo_path
         self.ref = ref  # Optional specific ref (tag or commit hash) to use
+        self.paths = paths if paths else DEFAULT_COMMIT_PATHS
         if not os.path.exists(os.path.join(repo_path, ".git")):
             raise ValueError(f"Not a git repository: {repo_path}")
 
@@ -122,7 +124,7 @@ class GitRepo:
         # Use self.ref if specified, otherwise use provided branchname
         ref_to_use = self.ref if self.ref else branchname
         
-        for path in CIFS_COMMIT_PATHS:
+        for path in self.paths:
             logger.debug(f"Scanning path: {path}")
             log_data = self.run_git([
                 "log",
@@ -197,13 +199,16 @@ def load_commits_from_file(file_path: str = None) -> List[Dict]:
         sys.exit(1)
 
 
-def process_commits(input_path: str = None, ref_repo_spec: str = None, target_repo_spec: str = None, similarity_threshold: float = 0.8) -> List[CommitInfo]:
+def process_commits(input_path: str = None, ref_repo_spec: str = None, target_repo_spec: str = None, paths: List[str] = None, similarity_threshold: float = 0.8) -> List[CommitInfo]:
     # Parse repo specifications
     ref_repo_path, ref_repo_ref = parse_repo_spec(ref_repo_spec)
     target_repo_path, target_repo_ref = parse_repo_spec(target_repo_spec)
     
-    ref_repo = GitRepo(ref_repo_path, ref=ref_repo_ref)
-    target_repo = GitRepo(target_repo_path, ref=target_repo_ref)
+    # Use provided paths or defaults
+    commit_paths = paths if paths else DEFAULT_COMMIT_PATHS
+    
+    ref_repo = GitRepo(ref_repo_path, ref=ref_repo_ref, paths=commit_paths)
+    target_repo = GitRepo(target_repo_path, ref=target_repo_ref, paths=commit_paths)
     commits = []
     earliest_date = None
 
@@ -371,6 +376,11 @@ Usage Patterns:
   With verbose logging:
   %(prog)s --input-file commits.json --mainline-repo /path/to/mainline \\
            --target-repo /path/to/stable --verbose
+  
+  Track different subsystem paths:
+  %(prog)s --input-file commits.json --mainline-repo /path/to/mainline \\
+           --target-repo /path/to/stable --paths "fs/btrfs/"
+  %(prog)s --config config.json --paths "net/core/" "drivers/net/"
 
 Examples:
   # Compare commits from file (auto-detect JSON/CSV input)
@@ -408,6 +418,9 @@ Examples:
                         help='output file path (prints to stdout if not specified)')
     parser.add_argument('--output-format', type=str, choices=['csv', 'json'], default='json', metavar='FORMAT',
                         help='output format: csv or json (default: json)')
+    parser.add_argument('--paths', nargs='+', type=str, metavar='PATH',
+                        help='paths to track in the repository (space-separated, e.g., "fs/cifs/" "fs/smb/client/"). '
+                             'Defaults to CIFS/SMB paths if not specified')
     parser.add_argument('--verbose', action='store_true',
                         help='enable verbose/debug logging')
     
@@ -437,6 +450,8 @@ def load_config(args) -> Dict:
             config['output_file'] = args.output_file
         if args.output_format != 'json':  # Only override if explicitly set
             config['output_format'] = args.output_format
+        if args.paths:
+            config['paths'] = args.paths
         
         return config
     else:
@@ -454,6 +469,7 @@ def load_config(args) -> Dict:
             'target_repo': args.target_repo,
             'output_file': args.output_file,
             'output_format': args.output_format,
+            'paths': args.paths if args.paths else DEFAULT_COMMIT_PATHS,
         }
         
         return config
@@ -473,7 +489,8 @@ def main():
     commits = process_commits(
         config.get('input_file'),
         config['mainline_repo'],
-        config['target_repo']
+        config['target_repo'],
+        paths=config.get('paths', DEFAULT_COMMIT_PATHS)
     )
 
     # Create out directory if it doesn't exist

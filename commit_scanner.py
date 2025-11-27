@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 
 NOFILTER = False
 
-CIFS_COMMIT_PATHS = [
+# Default paths for CIFS/SMB subsystem - can be overridden via config
+DEFAULT_COMMIT_PATHS = [
     "fs/cifs/",
     "fs/smb/client/",
     "fs/netfs/"
@@ -44,10 +45,11 @@ class Commit:
 
 
 class GitRepo:
-    def __init__(self, repo_path: str, default_branch: str = "master", ref: str = None):
+    def __init__(self, repo_path: str, default_branch: str = "master", ref: str = None, paths: List[str] = None):
         self.repo_path = repo_path
         self.default_branch = default_branch
         self.ref = ref  # Optional specific ref (tag or commit hash) to use
+        self.paths = paths if paths else DEFAULT_COMMIT_PATHS
         if not os.path.exists(os.path.join(repo_path, ".git")):
             raise ValueError(f"Not a git repository: {repo_path}")
         if not self.ref:
@@ -150,7 +152,7 @@ class GitRepo:
                 return None
 
     def get_cifs_commits(self, start_ref: str, end_ref: str = "HEAD") -> List[Commit]:
-        """Get all commits between start_ref and end_ref, relevant to cifs
+        """Get all commits between start_ref and end_ref in the tracked paths
 
         The range is exclusive of start_ref and inclusive of end_ref
         in the paths of interest.
@@ -159,10 +161,11 @@ class GitRepo:
         to and including 6.15 tag)."""
         # Use self.ref if specified, otherwise use end_ref
         actual_end_ref = self.ref if self.ref else end_ref
-        logger.info(f"Getting CIFS commits from {start_ref} to {actual_end_ref}...")
+        logger.info(f"Getting commits from {start_ref} to {actual_end_ref}...")
+        logger.debug(f"Tracking paths: {self.paths}")
         format_str = "%H%x00%an%x00%ae%x00%at%x00%s%x00%b%x1e"
         commits = []
-        paths = CIFS_COMMIT_PATHS.copy()
+        paths = self.paths.copy()
         paths.append("Makefile")  # Also add Makefile to track version bumps
         logger.debug(f"Paths to scan: {paths}")
         
@@ -219,10 +222,14 @@ class CommitScanner:
         # Get optional ref from config
         repo_ref = config.get('mainline_repo_ref')
         
+        # Get paths from config or use defaults
+        paths = config.get('paths', DEFAULT_COMMIT_PATHS)
+        
         self.repo = GitRepo(
             self.config['mainline_repo'],
             self.config.get('default_branch', 'master'),
-            ref=repo_ref
+            ref=repo_ref,
+            paths=paths
         )
         self.important_emails = set(self.config['emails'])
         self.keywords = [k.lower() for k in self.config['keywords']]
@@ -413,6 +420,12 @@ Usage Patterns:
               --emails user1@example.com user2@example.com \\
               --keywords CVE regression "memory leak" crash
   
+  4. Track different subsystem paths:
+     %(prog)s --start 6.6 --mainline-repo /path/to/linux \\
+              --paths "fs/btrfs/" --emails user@example.com
+     %(prog)s --start 6.6 --mainline-repo /path/to/linux \\
+              --paths "net/core/" "drivers/net/" "include/net/"
+  
   Note: When using command-line arguments without --emails or --keywords,
         filtering is automatically disabled (equivalent to --no-filter).
 
@@ -429,6 +442,13 @@ Examples:
   # Use specific git tag or commit as endpoint
   %(prog)s --start 6.6 --mainline-repo ~/linux:v6.15
   %(prog)s --start 6.6 --mainline-repo ~/linux:abc123def456
+  
+  # Track different subsystem (e.g., btrfs filesystem)
+  %(prog)s --start 6.6 --mainline-repo ~/linux --paths "fs/btrfs/"
+  
+  # Track multiple networking subsystems
+  %(prog)s --start 6.6 --mainline-repo ~/linux \\
+           --paths "net/core/" "drivers/net/ethernet/" --emails netdev@example.com
   
   # Use config file with explicit no-filter and output to JSON file
   %(prog)s --config config.json --no-filter --output-file out/commits.json
@@ -457,6 +477,9 @@ Examples:
                         help='important author email addresses (space-separated)')
     parser.add_argument('--keywords', nargs='+', type=str, metavar='KEYWORD',
                         help='keywords to search for in commit messages (space-separated, use quotes for multi-word)')
+    parser.add_argument('--paths', nargs='+', type=str, metavar='PATH',
+                        help='paths to track in the repository (space-separated, e.g., "fs/cifs/" "fs/smb/client/"). '
+                             'Defaults to CIFS/SMB paths if not specified')
     parser.add_argument('--verbose', '-v', action='store_true',
                         help='enable verbose debug logging')
     
@@ -494,6 +517,8 @@ def load_config(args) -> tuple[Dict, bool]:
             config['emails'] = args.emails
         if args.keywords:
             config['keywords'] = args.keywords
+        if args.paths:
+            config['paths'] = args.paths
         
         return config, should_apply_nofilter
     else:
@@ -516,6 +541,7 @@ def load_config(args) -> tuple[Dict, bool]:
             'default_branch': args.default_branch,
             'emails': args.emails if args.emails else [],
             'keywords': args.keywords if args.keywords else [],
+            'paths': args.paths if args.paths else DEFAULT_COMMIT_PATHS,
         }
         
         if args.output_file:
