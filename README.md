@@ -48,11 +48,11 @@ python commit_scanner.py --start 6.6 --mainline-repo /path/to/linux:v6.15
 python commit_scanner.py --start 6.6 --mainline-repo /path/to/linux:abc123def
 
 # Track different subsystem (e.g., btrfs filesystem)
-python commit_scanner.py --start 6.6 --mainline-repo /path/to/linux \\
+python commit_scanner.py --start 6.6 --mainline-repo /path/to/linux \
     --paths "fs/btrfs/" --emails btrfs-maintainer@example.com
 
 # Track multiple networking subsystems
-python commit_scanner.py --start 6.6 --mainline-repo /path/to/linux \\
+python commit_scanner.py --start 6.6 --mainline-repo /path/to/linux \
     --paths "net/core/" "drivers/net/ethernet/" --emails netdev@example.com
 ```
 
@@ -100,12 +100,12 @@ python compare_trees.py --input-file commits.json \
     --target-repo /path/to/stable:linux-6.6.y
 
 # With verbose logging
-python compare_trees.py --input-file commits.json \\
+python compare_trees.py --input-file commits.json \
     --mainline-repo /path/to/mainline --target-repo /path/to/stable --verbose
 
 # Track different subsystem paths
-python compare_trees.py --input-file commits.json \\
-    --mainline-repo /path/to/mainline --target-repo /path/to/stable \\
+python compare_trees.py --input-file commits.json \
+    --mainline-repo /path/to/mainline --target-repo /path/to/stable \
     --paths "fs/btrfs/"
 ```
 

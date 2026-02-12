@@ -2,10 +2,8 @@
 
 import os
 import sys
-import csv
 import json
 import re
-import subprocess
 import argparse
 import logging
 from typing import List, Dict, Set, Tuple
@@ -13,20 +11,10 @@ from dataclasses import dataclass
 from datetime import datetime
 import pandas as pd
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(levelname)s: %(message)s',
-    stream=sys.stderr
-)
-logger = logging.getLogger(__name__)
+from common import DEFAULT_COMMIT_PATHS, parse_repo_spec, GitRepo, setup_logging, get_repo_name
 
-# Default paths for CIFS/SMB subsystem - can be overridden via config
-DEFAULT_COMMIT_PATHS = [
-    "fs/cifs/",
-    "fs/smb/client/",
-    "fs/netfs/"
-]
+# Configure logging
+logger = setup_logging(__name__)
 
 
 @dataclass
@@ -40,86 +28,6 @@ class CommitInfo:
     found_in_target: bool = False
     found_by_title: bool = False
     matching_target_hash: str = None
-
-
-class GitRepo:
-    def __init__(self, repo_path: str, ref: str = None, paths: List[str] = None):
-        self.repo_path = repo_path
-        self.ref = ref  # Optional specific ref (tag or commit hash) to use
-        self.paths = paths if paths else DEFAULT_COMMIT_PATHS
-        if not os.path.exists(os.path.join(repo_path, ".git")):
-            raise ValueError(f"Not a git repository: {repo_path}")
-
-    def run_git(self, args: List[str]) -> str:
-        try:
-            result = subprocess.run(
-                ["git"] + args,
-                cwd=self.repo_path,
-                check=True,
-                capture_output=True,
-                text=True
-            )
-            return result.stdout.strip()
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Git command failed: {' '.join(['git'] + args)}")
-            logger.error(f"Error: {e.stderr}")
-            sys.exit(1)
-
-    def get_commit_date(self, commit_hash: str) -> datetime:
-        """Get the commit date for a given hash."""
-        try:
-            timestamp = self.run_git(
-                ["show", "-s", "--format=%at", commit_hash])
-            return datetime.fromtimestamp(int(timestamp))
-        except:
-            logger.warning(f"Could not get date for commit {commit_hash}")
-            return None
-
-    def check_commit_exists(self, commit_hash: str) -> bool:
-        """Check if a commit exists in the repository."""
-        try:
-            # Use cat-file to verify it's a valid commit object
-            self.run_git(["cat-file", "-e", f"{commit_hash}^{{commit}}"])
-            # Get the full hash to ensure it's not ambiguous
-            full_hash = self.run_git(
-                ["rev-parse", "--verify", f"{commit_hash}^{{commit}}"])
-            return bool(full_hash)
-        except:
-            return False
-
-    def get_current_branch(self) -> str:
-        """Get the name of the current branch."""
-        try:
-            return self.run_git(["rev-parse", "--abbrev-ref", "HEAD"])
-        except:
-            return "unknown"
-
-    def get_commits_since(self, date: datetime, branchname: str = None) -> List[Tuple[str, str]]:
-        """Get all relevant commits since the given date, returns list of (hash, title) tuples."""
-        format_str = "%H%x00%s"
-        commits = []
-        
-        # Use self.ref if specified, otherwise use provided branchname
-        ref_to_use = self.ref if self.ref else branchname
-        
-        logger.debug(f"Scanning paths: {self.paths}")
-        
-        # Run git log once with all paths
-        log_data = self.run_git([
-            "log",
-            ref_to_use,
-            f"--since={date.isoformat()}",
-            "--format=" + format_str,
-            "--no-merges",  # Exclude merge commits
-            "--"
-        ] + self.paths)
-        
-        for line in log_data.split('\n'):
-            if not line.strip():
-                continue
-            commit_hash, title = line.split('\x00')
-            commits.append((commit_hash, title))
-        return commits
 
 
 def title_similarity(title1: str, title2: str) -> float:
@@ -145,10 +53,8 @@ def load_commits_from_file(file_path: str = None) -> List[Dict]:
                 logger.debug("Failed to parse stdin as JSON, trying CSV...")
                 # Try CSV
                 import io
-                commits = []
-                reader = csv.DictReader(io.StringIO(input_data))
-                for row in reader:
-                    commits.append(row)
+                df = pd.read_csv(io.StringIO(input_data))
+                commits = df.to_dict('records')
                 logger.info("Successfully parsed commits from stdin as CSV")
                 return commits
         except Exception as e:
@@ -167,11 +73,8 @@ def load_commits_from_file(file_path: str = None) -> List[Dict]:
     
     # Fall back to CSV
     try:
-        commits = []
-        with open(file_path, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                commits.append(row)
+        df = pd.read_csv(file_path)
+        commits = df.to_dict('records')
         logger.info(f"Successfully loaded commits from CSV file: {file_path}")
         return commits
     except Exception as e:
@@ -201,7 +104,7 @@ def process_commits(input_path: str = None, ref_repo_spec: str = None, target_re
         try:
             if 'e+' in hash_str.lower():
                 return None
-        except:
+        except Exception:
             return None
 
         # Basic validation: should be hexadecimal and at least 7 chars
@@ -299,29 +202,6 @@ def process_commits(input_path: str = None, ref_repo_spec: str = None, target_re
     logger.info(f"Commits not found: {not_found}")
 
     return commits
-
-
-def get_repo_name(repo_path: str) -> str:
-    """Extract repository name from path."""
-    # Remove trailing slash if present
-    repo_path = repo_path.rstrip('/')
-    # Get the last component of the path
-    return os.path.basename(repo_path)
-
-
-def parse_repo_spec(repo_spec: str) -> tuple[str, str]:
-    """Parse repository specification in PATH:TAG format.
-    
-    Args:
-        repo_spec: Repository path, optionally followed by :TAG where TAG is a git tag or commit hash
-        
-    Returns:
-        tuple: (repo_path, ref) where ref is None if not specified
-    """
-    if ':' in repo_spec:
-        parts = repo_spec.split(':', 1)
-        return parts[0], parts[1]
-    return repo_spec, None
 
 
 def parse_args():

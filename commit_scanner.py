@@ -4,7 +4,6 @@ import os
 import sys
 import json
 import re
-import subprocess
 import argparse
 import logging
 from typing import List, Dict, Optional, Set
@@ -12,22 +11,12 @@ from dataclasses import dataclass
 from datetime import datetime
 import pandas as pd
 
+from common import DEFAULT_COMMIT_PATHS, parse_repo_spec, GitRepo, setup_logging
+
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(levelname)s: %(message)s',
-    stream=sys.stderr
-)
-logger = logging.getLogger(__name__)
+logger = setup_logging(__name__)
 
 NOFILTER = False
-
-# Default paths for CIFS/SMB subsystem - can be overridden via config
-DEFAULT_COMMIT_PATHS = [
-    "fs/cifs/",
-    "fs/smb/client/",
-    "fs/netfs/"
-]
 
 @dataclass
 class Commit:
@@ -44,175 +33,68 @@ class Commit:
         return f"{self.subject}\n\n{self.body}"
 
 
-class GitRepo:
-    def __init__(self, repo_path: str, default_branch: str = "master", ref: str = None, paths: List[str] = None):
-        self.repo_path = repo_path
-        self.default_branch = default_branch
-        self.ref = ref  # Optional specific ref (tag or commit hash) to use
-        self.paths = paths if paths else DEFAULT_COMMIT_PATHS
-        if not os.path.exists(os.path.join(repo_path, ".git")):
-            raise ValueError(f"Not a git repository: {repo_path}")
-        if not self.ref:
-            self.ensure_clean_state()
+def get_cifs_commits(repo: GitRepo, start_ref: str, end_ref: str = "HEAD") -> List[Commit]:
+    """Get all commits between start_ref and end_ref in the tracked paths
 
-    def ensure_clean_state(self):
-        """Ensure the repo is in a clean state and on the default branch."""
-        # Check if there are any uncommitted changes
-        if self.run_git(["status", "--porcelain"]):
-            raise ValueError(
-                f"Repository has uncommitted changes: {self.repo_path}")
+    The range is exclusive of start_ref and inclusive of end_ref
+    in the paths of interest.
+    For example, with start=v6.14 and end=v6.15, this will return
+    all commits that went into 6.15 (everything after 6.14 tag up
+    to and including 6.15 tag)."""
+    # Use repo.ref if specified, otherwise use end_ref
+    actual_end_ref = repo.ref if repo.ref else end_ref
+    logger.info(f"Getting commits from {start_ref} to {actual_end_ref}...")
+    logger.debug(f"Tracking paths: {repo.paths}")
+    format_str = "%H%x00%an%x00%ae%x00%at%x00%s%x00%b%x1e"
+    commits = []
+    paths = repo.paths.copy()
+    paths.append("Makefile")  # Also add Makefile to track version bumps
+    logger.debug(f"Paths to scan: {paths}")
+    
+    # Run git log once with all paths
+    log_data = repo.run_git([
+        "log",
+        f"{start_ref}..{actual_end_ref}",
+        "--format=" + format_str,
+        "--reverse",
+        "--no-merges",
+        "--"
+    ] + paths)
 
-        # Checkout default branch if needed
-        current_branch = self.run_git(["rev-parse", "--abbrev-ref", "HEAD"])
-        if current_branch != self.default_branch:
-            self.run_git(["checkout", self.default_branch])
+    logger.debug(f"Raw log data length: {len(log_data.split('\x1e'))}")
 
-    def run_git(self, args: List[str]) -> str:
-        try:
-            result = subprocess.run(
-                ["git"] + args,
-                cwd=self.repo_path,
-                check=True,
-                capture_output=True,
-                text=True
-            )
-            return result.stdout.strip()
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Git command failed: {' '.join(['git'] + args)}")
-            logger.error(f"Error: {e.stderr}")
-            sys.exit(1)
+    # Cache the current release tag to avoid repeated git calls
+    current_release = None
+    
+    for entry in log_data.split("\x1e"):
+        if not entry.strip():
+            continue
+        parts = entry.split("\x00")
+        if len(parts) >= 6:
+            commit_hash = parts[0].strip()
+            commit_subject = parts[4].strip()
 
-    def get_release_tag(self, commit_hash: str) -> Optional[str]:
-        """Get the first release tag that contains this commit."""
-        try:
-            logger.debug(f"Getting release tag for commit {commit_hash}")
-            result = self.run_git([
-                "tag",
-                "--sort=creatordate",
-                "--contains", commit_hash
-            ])
-            if not result:
-                return ""
-            
-            # Filter for version tags matching v[1-9]*\.[0-9]* (e.g., v6.12, v6.12.1)
-            # Exclude rc, pre-release, or other suffixes
-            pattern = re.compile(r'^v[1-9][0-9]*\.[0-9]+(\.[0-9]+)*$')
-            for tag in result.split('\n'):
-                tag = tag.strip()
-                if tag and pattern.match(tag):
-                    logger.debug(f"Got release tag for commit {commit_hash}: {tag}")
-                    return tag
-            return ""
-        except:
-            logger.debug(f"Failed to get release tag for commit {commit_hash}")
-            return ""
-
-    def find_version_commit(self, version: str) -> Optional[str]:
-        """Find commit hash for a kernel version, trying both tag and release message."""
-        # Try as a tag first
-        if version.startswith('v'):
-            tag = version
-        else:
-            tag = f"v{version}"
-
-        # First try exact tag match
-        try:
-            return self.run_git(["rev-parse", "--verify", tag])
-        except:
-            # Try tag pattern match (for cases like v6.15 matching v6.15.0)
-            try:
-                tags = self.run_git(["tag", "-l", f"{tag}*"])
-                if tags:
-                    # Use the first matching tag (should be the base version)
-                    return self.run_git(["rev-parse", "--verify", tags.split('\n')[0]])
-            except:
-                pass
-
-            # Try finding Linus' release commit
-            try:
-                # Look for exact "Linux x.y" commit by Linus
-                commits = self.run_git([
-                    "log", "-1",
-                    "--format=%H",
-                    "--author=Torvalds",
-                    "--fixed-strings",  # Treat pattern as literal string
-                    "--grep", f"Linux {version}",
-                    "--grep-reflog", "Merge tag"  # Exclude merge tag messages
-                    "--invert-grep"  # Exclude merge tag messages
-                ])
-                if commits:
-                    # Verify it's an exact release message
-                    commit_msg = self.run_git(
-                        ["log", "-1", "--format=%s", commits.split('\n')[0]])
-                    if commit_msg.strip() == f"Linux {version}":
-                        logger.info(f"Found release commit for version {version}: {commits.split('\n')[0]}")
-                        return commits.split('\n')[0]
-                return None
-            except:
-                return None
-
-    def get_cifs_commits(self, start_ref: str, end_ref: str = "HEAD") -> List[Commit]:
-        """Get all commits between start_ref and end_ref in the tracked paths
-
-        The range is exclusive of start_ref and inclusive of end_ref
-        in the paths of interest.
-        For example, with start=v6.14 and end=v6.15, this will return
-        all commits that went into 6.15 (everything after 6.14 tag up
-        to and including 6.15 tag)."""
-        # Use self.ref if specified, otherwise use end_ref
-        actual_end_ref = self.ref if self.ref else end_ref
-        logger.info(f"Getting commits from {start_ref} to {actual_end_ref}...")
-        logger.debug(f"Tracking paths: {self.paths}")
-        format_str = "%H%x00%an%x00%ae%x00%at%x00%s%x00%b%x1e"
-        commits = []
-        paths = self.paths.copy()
-        paths.append("Makefile")  # Also add Makefile to track version bumps
-        logger.debug(f"Paths to scan: {paths}")
-        
-        # Run git log once with all paths
-        log_data = self.run_git([
-            "log",
-            f"{start_ref}..{actual_end_ref}",
-            "--format=" + format_str,
-            "--reverse",
-            "--no-merges",
-            "--"
-        ] + paths)
-
-        logger.debug(f"Raw log data length: {len(log_data.split('\x1e'))}")
-
-        # Cache the current release tag to avoid repeated git calls
-        current_release = None
-        
-        for entry in log_data.split("\x1e"):
-            if not entry.strip():
+            # Skip Makefile version bump commits
+            if re.match(r'Linux \d+\.\d+(\.\d+)?$', commit_subject):
+                logger.debug(f"Skipping Makefile version bump commit: {commit_hash}: {commit_subject}")
+                current_release = None  # Reset cached release
                 continue
-            parts = entry.split("\x00")
-            if len(parts) >= 6:
-                commit_hash = parts[0].strip()
-                commit_subject = parts[4].strip()
 
-                # Skip Makefile version bump commits
-                if re.match(r'Linux \d+\.\d+(\.\d+)?$', commit_subject):
-                    logger.debug(f"Skipping Makefile version bump commit: {commit_hash}: {commit_subject}")
-                    current_release = None  # Reset cached release
-                    continue
-
-                # Check if we need to update the cached release
-                if current_release is None:
-                    # First commit - get the release tag
-                    current_release = self.get_release_tag(commit_hash)
-                
-                commits.append(Commit(
-                    hash=commit_hash,
-                    author_name=parts[1].strip(),
-                    author_email=parts[2].strip(),
-                    date=datetime.fromtimestamp(int(parts[3])),
-                    subject=parts[4].strip(),
-                    body=parts[5],
-                    release=current_release
-                ))
-        return commits
+            # Check if we need to update the cached release
+            if current_release is None:
+                # First commit - get the release tag
+                current_release = repo.get_release_tag(commit_hash)
+            
+            commits.append(Commit(
+                hash=commit_hash,
+                author_name=parts[1].strip(),
+                author_email=parts[2].strip(),
+                date=datetime.fromtimestamp(int(parts[3])),
+                subject=parts[4].strip(),
+                body=parts[5],
+                release=current_release
+            ))
+    return commits
 
 
 class CommitScanner:
@@ -326,7 +208,7 @@ class CommitScanner:
             end_commit = "HEAD"
 
         # Get all commits in range
-        cifs_commits = self.repo.get_cifs_commits(start_commit, end_commit)
+        cifs_commits = get_cifs_commits(self.repo, start_commit, end_commit)
         logger.info(f"Found {len(cifs_commits)} total cifs-relevant commits")
 
         if NOFILTER:
@@ -376,23 +258,8 @@ class CommitScanner:
         if stable_commits:
             logger.info(f"Found {len(stable_commits)} commits marked for stable")
 
-        # Create a dataframe-like output. TODO: add kernel version information
+        # Create a dataframe-like output
         return self.commits_to_df([c[0] for c in important_commits], [c[1] for c in important_commits])
-
-
-def parse_repo_spec(repo_spec: str) -> tuple[str, str]:
-    """Parse repository specification in PATH:TAG format.
-    
-    Args:
-        repo_spec: Repository path, optionally followed by :TAG where TAG is a git tag or commit hash
-        
-    Returns:
-        tuple: (repo_path, ref) where ref is None if not specified
-    """
-    if ':' in repo_spec:
-        parts = repo_spec.split(':', 1)
-        return parts[0], parts[1]
-    return repo_spec, None
 
 
 def parse_args():
@@ -415,12 +282,12 @@ Usage Patterns:
      %(prog)s --start 6.6 --mainline-repo /path/to/linux:v6.15
      %(prog)s --start 6.6 --mainline-repo /path/to/linux:abc123def
   
-  3. With filtering options (when not using --config):
+  4. With filtering options (when not using --config):
      %(prog)s --start 6.6 --mainline-repo /path/to/linux \\
               --emails user1@example.com user2@example.com \\
               --keywords CVE regression "memory leak" crash
   
-  4. Track different subsystem paths:
+  5. Track different subsystem paths:
      %(prog)s --start 6.6 --mainline-repo /path/to/linux \\
               --paths "fs/btrfs/" --emails user@example.com
      %(prog)s --start 6.6 --mainline-repo /path/to/linux \\
@@ -577,6 +444,14 @@ def main():
 
     # Determine output format
     output_format = args.output_format
+    
+    # Sanitize data for CSV format by removing commas from fields
+    if output_format == 'csv':
+        # Replace commas with empty string in all string/object columns
+        for col in important_commits.select_dtypes(include=['object']).columns:
+            important_commits[col] = important_commits[col].apply(
+                lambda x: str(x).replace(',', '') if pd.notna(x) else x
+            )
     
     # Get output file from config or use stdout
     output_file = scanner.config.get('output_file')
