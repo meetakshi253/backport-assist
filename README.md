@@ -137,6 +137,34 @@ python commit_scanner.py --start 6.6 --mainline-repo ~/mainline:v6.15 | \
 
 Run `python compare_trees.py --help` for more details.
 
+## MCP Server for AI Agents
+
+The backport-assist tool includes an MCP (Model Context Protocol) server that allows AI agents to query and analyze patches in Linux kernel trees.
+
+**Quick Start:**
+```bash
+# Install MCP dependencies
+pip install -r mcp/requirements.txt
+
+# Run the MCP server
+python mcp/server.py
+```
+
+**Available Tools:**
+- `scan_commits` - Scan commits by version range with filtering
+- `compare_commits` - Compare commits between mainline and target trees
+- `get_commit_info` - Get detailed commit information
+- `list_releases` - List all release tags in a repository
+
+**Example Queries for AI Agents:**
+> "Scan commits in /home/user/linux from v6.6 to v6.15 for CIFS subsystem"
+
+> "Compare the scanned commits between mainline and stable tree at /home/user/linux-stable:linux-6.6.y"
+
+> "Get detailed information about commit abc123def in /home/user/linux"
+
+See [mcp/README.md](mcp/README.md) for detailed documentation.
+
 ## Using Git Worktrees
 
 Git worktrees are particularly useful for this workflow, as they allow you to maintain multiple branches in separate directories without needing to clone the repository multiple times.
