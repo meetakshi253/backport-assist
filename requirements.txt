@@ -1,1 +1,5 @@
+# Core dependencies
 pandas>=2.0.0
+
+# MCP server dependencies (optional - only needed for MCP server)
+# Install with: pip install -r mcp/requirements.txt
