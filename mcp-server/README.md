@@ -196,6 +196,115 @@ List all release tags in a kernel repository.
 
 **Returns:** List of version tags (e.g., v6.14, v6.15.1).
 
+### 6. analyze_team_contributions
+
+Analyze kernel contributions by a team of developers, tracking all contribution types.
+
+**Parameters:**
+- `repo_path` (required): Absolute path to kernel repository
+- `team_emails` (required): Array of team member email addresses
+- `since_date` (optional): Start date in YYYY-MM-DD format
+- `until_date` (optional): End date in YYYY-MM-DD format
+- `paths` (optional): Array of paths to analyze (defaults to SMB paths)
+- `include_commit_details` (optional): Include detailed commit lists (default: true)
+
+**Tracks:**
+- Commits authored by team members
+- Reviewed-by tags
+- Tested-by tags
+- Reported-by tags
+- Acked-by tags
+- Suggested-by tags
+- Signed-off-by tags
+
+**Example:**
+```json
+{
+  "repo_path": "/home/user/linux",
+  "team_emails": [
+    "dev1@example.com",
+    "dev2@example.com",
+    "dev3@example.com"
+  ],
+  "since_date": "2024-04-01",
+  "until_date": "2026-04-01",
+  "paths": ["fs/smb/client/", "fs/cifs/"]
+}
+```
+
+**Returns:** 
+- Overall statistics (total unique commits, breakdown by type)
+- Individual statistics per team member
+- Optional: Detailed commit hash lists grouped by contribution type
+
+**Use cases:**
+- Track team productivity and contributions
+- Generate contribution reports
+- Identify review patterns and collaboration
+- Measure different types of contributions beyond just authorship
+
+### 7. get_team_commit_details
+
+Get detailed commit messages for team contributions grouped by contribution type.
+
+**Parameters:**
+- `repo_path` (required): Absolute path to kernel repository
+- `team_emails` (required): Array of team member email addresses
+- `since_date` (optional): Start date in YYYY-MM-DD format
+- `until_date` (optional): End date in YYYY-MM-DD format
+- `paths` (optional): Array of paths to analyze (defaults to SMB paths)
+
+**Example:**
+```json
+{
+  "repo_path": "/home/user/linux",
+  "team_emails": ["dev1@example.com", "dev2@example.com"],
+  "since_date": "2024-04-01",
+  "until_date": "2026-04-01"
+}
+```
+
+**Returns:** Commit hashes and one-line subjects organized by contribution type:
+- Authored commits
+- Reviewed commits
+- Tested commits
+- Reported issues
+- Acked commits
+- Suggested changes
+
+**Use cases:**
+- Generate detailed contribution reports
+- Create documentation of team's work
+- Verify contribution counts
+- Export commit lists for further analysis
+
+### 8. categorize_commits
+
+Categorize commits from backport analysis results into fixes vs features.
+
+**Parameters:**
+- `analysis_file` (required): Path to JSON file with scan_and_compare or compare_commits results
+- `db_path` (required): Path to SQLite database file (will be created)
+- `mainline_repo` (required): Path to mainline kernel repository for fetching commit messages
+
+**Categorizes:**
+- Fix vs Feature
+- Issue types (memory_leak, crash, corruption, use_after_free, etc.)
+- Feature areas (multichannel, lease, encryption, caching, etc.)
+- Keywords extraction
+
+**Returns:** Summary statistics of categorized commits stored in SQLite database
+
+### 9-13. Query Tools
+
+Query categorized commits from the SQLite database:
+
+- **query_by_feature_area**: Query commits by feature (e.g., 'multichannel', 'lease')
+- **query_by_issue_type**: Query fixes by issue type (e.g., 'memory_leak', 'crash')
+- **query_by_keyword**: Search by keyword in commit messages
+- **get_critical_missing**: Get critical fixes missing from stable
+- **get_stats**: Get overall database statistics
+
 ## Resources
 
 The server provides documentation resources:
@@ -250,6 +359,21 @@ Ask your AI agent:
 
 Ask your AI agent:
 > "List all release tags in /home/user/linux"
+
+### Analyze Team Contributions
+
+Ask your AI agent:
+> "Analyze kernel contributions by my team in the last 2 years. The team consists of: dev1@example.com, dev2@example.com, dev3@example.com. Count commits not just by authorship, but also Reviewed-by, Tested-by, Reported-by, Acked-by, and Suggested-by tags in /home/user/linux."
+
+Or for a specific date range:
+> "Get team contributions from 2024-04-01 to 2026-04-01 for emails: dev1@example.com, dev2@example.com in /home/user/linux for fs/smb/client/ paths"
+
+### Get Detailed Team Commit Lists
+
+Ask your AI agent:
+> "Get detailed commit messages for team contributions grouped by type (authored, reviewed, tested, etc.) for team members: dev1@example.com, dev2@example.com from 2024-04-01 to 2026-04-01"
+
+This can be used to generate reports with actual commit hashes and one-line summaries.
 
 ## Architecture
 

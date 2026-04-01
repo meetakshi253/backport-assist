@@ -20,7 +20,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from common import DEFAULT_COMMIT_PATHS, parse_repo_spec, GitRepo, setup_logging
 from commit_scanner import CommitScanner, get_cifs_commits
 from compare_trees import load_commits_from_file, process_commits
-from categorize_commits import populate_database, init_database
+from categorize_commits import (
+    populate_database, init_database,
+    analyze_team_contributions, get_team_contribution_details
+)
 from query_commits import CommitDatabase
 
 # MCP SDK imports
@@ -472,6 +475,89 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["db_path"]
             }
+        ),
+        Tool(
+            name="analyze_team_contributions",
+            description="""Analyze kernel contributions by a team of developers.
+            
+            Tracks contributions by type including:
+            - Commits authored by team members
+            - Reviewed-by tags
+            - Tested-by tags
+            - Reported-by tags
+            - Acked-by tags
+            - Suggested-by tags
+            
+            Supports filtering by date range and repository paths.
+            Returns summary statistics and detailed commit lists.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "repo_path": {
+                        "type": "string",
+                        "description": "Absolute path to kernel repository"
+                    },
+                    "team_emails": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of team member email addresses to track"
+                    },
+                    "since_date": {
+                        "type": "string",
+                        "description": "Start date in YYYY-MM-DD format (optional)"
+                    },
+                    "until_date": {
+                        "type": "string",
+                        "description": "End date in YYYY-MM-DD format (optional)"
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Paths to analyze (e.g., ['fs/smb/client/']). Defaults to SMB paths"
+                    },
+                    "include_commit_details": {
+                        "type": "boolean",
+                        "description": "If true, return detailed commit information for each contribution type",
+                        "default": True
+                    }
+                },
+                "required": ["repo_path", "team_emails"]
+            }
+        ),
+        Tool(
+            name="get_team_commit_details",
+            description="""Get detailed commit messages for team contributions grouped by type.
+            
+            Returns commit hashes and one-line subjects organized by contribution type
+            (authored, reviewed-by, tested-by, etc.) for generating reports.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "repo_path": {
+                        "type": "string",
+                        "description": "Absolute path to kernel repository"
+                    },
+                    "team_emails": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of team member email addresses to track"
+                    },
+                    "since_date": {
+                        "type": "string",
+                        "description": "Start date in YYYY-MM-DD format (optional)"
+                    },
+                    "until_date": {
+                        "type": "string",
+                        "description": "End date in YYYY-MM-DD format (optional)"
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Paths to analyze (e.g., ['fs/smb/client/']). Defaults to SMB paths"
+                    }
+                },
+                "required": ["repo_path", "team_emails"]
+            }
         )
     ]
 
@@ -503,6 +589,10 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             return await handle_get_critical_missing(arguments)
         elif name == "get_stats":
             return await handle_get_stats(arguments)
+        elif name == "analyze_team_contributions":
+            return await handle_analyze_team_contributions(arguments)
+        elif name == "get_team_commit_details":
+            return await handle_get_team_commit_details(arguments)
         else:
             raise ValueError(f"Unknown tool: {name}")
     
@@ -1080,6 +1170,191 @@ Top Feature Areas:
 """
     
     return [TextContent(type="text", text=summary)]
+
+
+async def handle_analyze_team_contributions(args: dict) -> list[TextContent]:
+    """Handle analyze_team_contributions tool call."""
+    repo_path = args["repo_path"]
+    team_emails = args["team_emails"]
+    since_date = args.get("since_date")
+    until_date = args.get("until_date")
+    paths = args.get("paths")
+    include_details = args.get("include_commit_details", True)
+    
+    # Validate repository exists
+    if not os.path.isdir(repo_path):
+        raise ValueError(f"Repository path does not exist: {repo_path}")
+    
+    # Validate team_emails
+    if not team_emails or not isinstance(team_emails, list):
+        raise ValueError("team_emails must be a non-empty list")
+    
+    logger.info(f"Analyzing team contributions for {len(team_emails)} team members")
+    logger.info(f"Date range: {since_date or 'beginning'} to {until_date or 'now'}")
+    
+    # Analyze contributions
+    contributions = analyze_team_contributions(
+        repo_path=repo_path,
+        team_emails=team_emails,
+        since_date=since_date,
+        until_date=until_date,
+        paths=paths
+    )
+    
+    # Build summary
+    summary_lines = ["Team Contributions Analysis", "=" * 70, ""]
+    
+    if since_date or until_date:
+        summary_lines.append(f"Period: {since_date or 'beginning'} to {until_date or 'now'}")
+        summary_lines.append("")
+    
+    # Overall totals
+    total_unique = sum(c['total_unique_commits'] for c in contributions.values())
+    total_authored = sum(c['authored'] for c in contributions.values())
+    total_reviewed = sum(c['reviewed_by'] for c in contributions.values())
+    total_acked = sum(c['acked_by'] for c in contributions.values())
+    total_tested = sum(c['tested_by'] for c in contributions.values())
+    total_reported = sum(c['reported_by'] for c in contributions.values())
+    total_suggested = sum(c['suggested_by'] for c in contributions.values())
+    
+    summary_lines.extend([
+        f"Total unique commits with team involvement: {total_unique}",
+        "",
+        "Breakdown by contribution type:",
+        f"  Authored:     {total_authored:5}",
+        f"  Reviewed-by:  {total_reviewed:5}",
+        f"  Acked-by:     {total_acked:5}",
+        f"  Suggested-by: {total_suggested:5}",
+        f"  Reported-by:  {total_reported:5}",
+        f"  Tested-by:    {total_tested:5}",
+        "",
+        "=" * 70,
+        ""
+    ])
+    
+    # Individual statistics
+    summary_lines.append("Individual Contributions:")
+    summary_lines.append("")
+    
+    for email in sorted(contributions.keys(), 
+                       key=lambda e: contributions[e]['total_unique_commits'], 
+                       reverse=True):
+        stats = contributions[email]
+        summary_lines.extend([
+            f"{email}",
+            f"  Total unique commits: {stats['total_unique_commits']}",
+            f"  Authored:     {stats['authored']:5}",
+            f"  Reviewed-by:  {stats['reviewed_by']:5}",
+            f"  Acked-by:     {stats['acked_by']:5}",
+            f"  Suggested-by: {stats['suggested_by']:5}",
+            f"  Reported-by:  {stats['reported_by']:5}",
+            f"  Tested-by:    {stats['tested_by']:5}",
+            ""
+        ])
+    
+    summary = "\n".join(summary_lines)
+    
+    # If details requested, include commit lists
+    if include_details:
+        details_lines = [
+            "",
+            "=" * 70,
+            "COMMIT DETAILS BY TYPE",
+            "=" * 70,
+            ""
+        ]
+        
+        # Aggregate all commits by type across all team members
+        all_by_type = {
+            'authored': set(),
+            'reviewed_by': set(),
+            'tested_by': set(),
+            'reported_by': set(),
+            'acked_by': set(),
+            'suggested_by': set()
+        }
+        
+        for stats in contributions.values():
+            for contrib_type, commits in stats['commits'].items():
+                all_by_type[contrib_type].update(commits)
+        
+        # Format each type
+        for contrib_type, commits in all_by_type.items():
+            if commits:
+                display_name = contrib_type.replace('_', '-').title()
+                details_lines.extend([
+                    f"{display_name}: {len(commits)} commits",
+                    "-" * 70
+                ])
+                for commit in sorted(commits):
+                    details_lines.append(f"  {commit}")
+                details_lines.append("")
+        
+        summary += "\n" + "\n".join(details_lines)
+    
+    return [TextContent(type="text", text=summary)]
+
+
+async def handle_get_team_commit_details(args: dict) -> list[TextContent]:
+    """Handle get_team_commit_details tool call."""
+    repo_path = args["repo_path"]
+    team_emails = args["team_emails"]
+    since_date = args.get("since_date")
+    until_date = args.get("until_date")
+    paths = args.get("paths")
+    
+    # Validate repository exists
+    if not os.path.isdir(repo_path):
+        raise ValueError(f"Repository path does not exist: {repo_path}")
+    
+    # Validate team_emails
+    if not team_emails or not isinstance(team_emails, list):
+        raise ValueError("team_emails must be a non-empty list")
+    
+    logger.info(f"Getting detailed commit information for {len(team_emails)} team members")
+    
+    # Get detailed commits
+    by_type = get_team_contribution_details(
+        repo_path=repo_path,
+        team_emails=team_emails,
+        since_date=since_date,
+        until_date=until_date,
+        paths=paths
+    )
+    
+    # Format output
+    output_lines = [
+        "Team Commit Details",
+        "=" * 70,
+        ""
+    ]
+    
+    if since_date or until_date:
+        output_lines.append(f"Period: {since_date or 'beginning'} to {until_date or 'now'}")
+        output_lines.append("")
+    
+    # Summary counts
+    for contrib_type, commits in by_type.items():
+        display_name = contrib_type.replace('_', '-').title()
+        output_lines.append(f"{display_name}: {len(commits)} commits")
+    
+    output_lines.extend(["", "=" * 70, ""])
+    
+    # Detailed listings
+    for contrib_type, commits in by_type.items():
+        if commits:
+            display_name = contrib_type.replace('_', '-').title()
+            output_lines.extend([
+                f"{display_name} ({len(commits)} commits)",
+                "-" * 70
+            ])
+            
+            for commit_hash, subject in sorted(commits.items()):
+                output_lines.append(f"{commit_hash} {subject}")
+            
+            output_lines.append("")
+    
+    return [TextContent(type="text", text="\n".join(output_lines))]
 
 
 async def main():

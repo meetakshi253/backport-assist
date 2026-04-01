@@ -4,6 +4,9 @@ Categorize SMB client commits and store in SQLite database.
 
 This script analyzes commit messages to categorize them as fixes vs features,
 and further categorizes by issue type or feature area.
+
+Also provides team contribution analysis by extracting author and trailer
+information (Reviewed-by, Tested-by, Reported-by, Acked-by, Suggested-by).
 """
 
 import sqlite3
@@ -12,6 +15,7 @@ import re
 import sys
 from pathlib import Path
 from datetime import datetime
+from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent))
 from common import GitRepo
@@ -97,6 +101,244 @@ def extract_fixes_hash(message: str) -> str:
 def is_marked_stable(message: str) -> bool:
     """Check if commit is marked for stable."""
     return bool(re.search(r'cc:.*stable@', message, re.IGNORECASE))
+
+def extract_trailers(message: str) -> dict:
+    """Extract all commit trailers (Reviewed-by, Tested-by, etc.) from commit message.
+    
+    Returns a dictionary with trailer types as keys and lists of email addresses as values.
+    """
+    trailers = defaultdict(list)
+    
+    # Common trailer patterns
+    trailer_patterns = [
+        'Reviewed-by',
+        'Tested-by',
+        'Reported-by',
+        'Acked-by',
+        'Suggested-by',
+        'Signed-off-by',
+        'Co-developed-by',
+        'Cc'
+    ]
+    
+    for line in message.split('\n'):
+        line = line.strip()
+        for trailer_type in trailer_patterns:
+            # Match pattern like "Reviewed-by: Name <email@domain.com>"
+            pattern = rf'^{trailer_type}:\s*.*?<([^>]+)>|^{trailer_type}:\s*(\S+@\S+)'
+            match = re.search(pattern, line, re.IGNORECASE)
+            if match:
+                email = match.group(1) or match.group(2)
+                if email:
+                    trailers[trailer_type.lower().replace('-', '_')].append(email.strip())
+                break
+    
+    return dict(trailers)
+
+def analyze_team_contributions(repo_path: str, team_emails: list, since_date: str = None, 
+                               until_date: str = None, paths: list = None) -> dict:
+    """Analyze contributions by team members.
+    
+    Args:
+        repo_path: Path to git repository
+        team_emails: List of email addresses to track
+        since_date: Start date in 'YYYY-MM-DD' format (optional)
+        until_date: End date in 'YYYY-MM-DD' format (optional)
+        paths: List of paths to analyze (optional, defaults to SMB paths)
+    
+    Returns:
+        Dictionary with contribution statistics by person and type
+    """
+    if paths is None:
+        paths = ['fs/smb/client/', 'fs/cifs/', 'fs/netfs/']
+    
+    repo = GitRepo(repo_path, paths=paths)
+    
+    # Build git log command
+    git_args = ['log', '--format=%H|%ae|%ad|%s%n%b', '--date=iso']
+    
+    if since_date:
+        git_args.append(f'--since={since_date}')
+    if until_date:
+        git_args.append(f'--until={until_date}')
+    
+    # Add paths
+    if paths:
+        git_args.append('--')
+        git_args.extend(paths)
+    
+    # Get commits
+    output = repo.run_git(git_args)
+    
+    # Parse commits and track contributions
+    contributions = defaultdict(lambda: defaultdict(set))
+    
+    current_commit = None
+    current_body = []
+    
+    for line in output.split('\n'):
+        if '|' in line and line.count('|') >= 3:
+            # Process previous commit if exists
+            if current_commit:
+                process_team_commit(current_commit, current_body, team_emails, contributions)
+            
+            # Start new commit
+            parts = line.split('|', 3)
+            current_commit = {
+                'hash': parts[0],
+                'author_email': parts[1],
+                'date': parts[2],
+                'subject': parts[3] if len(parts) > 3 else ''
+            }
+            current_body = []
+        else:
+            # Add to current commit body
+            current_body.append(line)
+    
+    # Process last commit
+    if current_commit:
+        process_team_commit(current_commit, current_body, team_emails, contributions)
+    
+    # Convert sets to counts and prepare summary
+    summary = {}
+    for email, contrib_types in contributions.items():
+        summary[email] = {
+            'authored': len(contrib_types['authored']),
+            'reviewed_by': len(contrib_types['reviewed_by']),
+            'tested_by': len(contrib_types['tested_by']),
+            'reported_by': len(contrib_types['reported_by']),
+            'acked_by': len(contrib_types['acked_by']),
+            'suggested_by': len(contrib_types['suggested_by']),
+            'signed_off_by': len(contrib_types['signed_off_by']),
+            'total_unique_commits': len(
+                contrib_types['authored'] | 
+                contrib_types['reviewed_by'] | 
+                contrib_types['tested_by'] |
+                contrib_types['reported_by'] |
+                contrib_types['acked_by'] |
+                contrib_types['suggested_by']
+            ),
+            'commits': {
+                'authored': sorted(contrib_types['authored']),
+                'reviewed_by': sorted(contrib_types['reviewed_by']),
+                'tested_by': sorted(contrib_types['tested_by']),
+                'reported_by': sorted(contrib_types['reported_by']),
+                'acked_by': sorted(contrib_types['acked_by']),
+                'suggested_by': sorted(contrib_types['suggested_by'])
+            }
+        }
+    
+    return summary
+
+def process_team_commit(commit: dict, body_lines: list, team_emails: list, contributions: dict):
+    """Process a single commit and update contribution tracking."""
+    commit_hash = commit['hash']
+    author_email = commit['author_email'].strip()
+    body = '\n'.join(body_lines)
+    
+    # Check if author is a team member
+    if author_email in team_emails:
+        contributions[author_email]['authored'].add(commit_hash)
+    
+    # Extract trailers
+    trailers = extract_trailers(body)
+    
+    # Check each trailer type for team members
+    for trailer_type, emails in trailers.items():
+        for email in emails:
+            if email in team_emails:
+                contributions[email][trailer_type].add(commit_hash)
+
+def get_team_contribution_details(repo_path: str, team_emails: list, since_date: str = None,
+                                  until_date: str = None, paths: list = None) -> dict:
+    """Get detailed commit information for team contributions.
+    
+    Returns commits grouped by contribution type with full commit messages.
+    """
+    if paths is None:
+        paths = ['fs/smb/client/', 'fs/cifs/', 'fs/netfs/']
+    
+    repo = GitRepo(repo_path, paths=paths)
+    
+    # Build git log command with full details
+    git_args = ['log', '--format=%H|%s|%ae|%ad%n%b', '--date=short']
+    
+    if since_date:
+        git_args.append(f'--since={since_date}')
+    if until_date:
+        git_args.append(f'--until={until_date}')
+    
+    if paths:
+        git_args.append('--')
+        git_args.extend(paths)
+    
+    output = repo.run_git(git_args)
+    
+    # Track commits by type
+    by_type = {
+        'authored': {},
+        'reviewed_by': {},
+        'tested_by': {},
+        'reported_by': {},
+        'acked_by': {},
+        'suggested_by': {}
+    }
+    
+    current_commit = None
+    current_body = []
+    
+    for line in output.split('\n'):
+        if '|' in line and line.count('|') >= 3:
+            # Process previous commit
+            if current_commit:
+                process_commit_details(current_commit, current_body, team_emails, by_type)
+            
+            # Start new commit
+            parts = line.split('|', 3)
+            current_commit = {
+                'hash': parts[0],
+                'subject': parts[1],
+                'author': parts[2],
+                'date': parts[3] if len(parts) > 3 else ''
+            }
+            current_body = []
+        else:
+            current_body.append(line)
+    
+    # Process last commit
+    if current_commit:
+        process_commit_details(current_commit, current_body, team_emails, by_type)
+    
+    return by_type
+
+def process_commit_details(commit: dict, body_lines: list, team_emails: list, by_type: dict):
+    """Process commit and categorize by contribution type."""
+    commit_hash = commit['hash']
+    subject = commit['subject']
+    author = commit['author']
+    body = '\n'.join(body_lines)
+    
+    # Check author
+    if author in team_emails:
+        by_type['authored'][commit_hash] = subject
+    
+    # Extract trailers
+    trailers = extract_trailers(body)
+    
+    # Map trailer types to our categories
+    trailer_map = {
+        'reviewed_by': 'reviewed_by',
+        'tested_by': 'tested_by',
+        'reported_by': 'reported_by',
+        'acked_by': 'acked_by',
+        'suggested_by': 'suggested_by'
+    }
+    
+    for trailer_type, category in trailer_map.items():
+        if trailer_type in trailers:
+            for email in trailers[trailer_type]:
+                if email in team_emails:
+                    by_type[category][commit_hash] = subject
 
 def categorize_commit(commit_hash: str, message: str, repo: GitRepo) -> dict:
     """Categorize a commit based on its message."""
