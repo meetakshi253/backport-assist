@@ -1,0 +1,10 @@
+{
+  "github.copilot.chat.mcp.servers": {
+    "kernel-backport-assistant": {
+      "command": "python3",
+      "args": [
+        "/home/sprasad/repo/meetakshi253/backport-assist/mcp/server.py"
+      ]
+    }
+  }
+}

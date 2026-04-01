@@ -6,6 +6,7 @@ import json
 import re
 import argparse
 import logging
+import time
 from typing import List, Dict, Set, Tuple
 from dataclasses import dataclass
 from datetime import datetime
@@ -83,6 +84,8 @@ def load_commits_from_file(file_path: str = None) -> List[Dict]:
 
 
 def process_commits(input_path: str = None, ref_repo_spec: str = None, target_repo_spec: str = None, paths: List[str] = None, similarity_threshold: float = 0.8) -> List[CommitInfo]:
+    start_time = time.time()
+    
     # Parse repo specifications
     ref_repo_path, ref_repo_ref = parse_repo_spec(ref_repo_spec)
     target_repo_path, target_repo_ref = parse_repo_spec(target_repo_spec)
@@ -115,7 +118,9 @@ def process_commits(input_path: str = None, ref_repo_spec: str = None, target_re
 
     # Read and validate commits from input file
     logger.info("Reading commits from input file...")
+    load_start = time.time()
     rows = load_commits_from_file(input_path)
+    logger.info(f"Loaded input file in {time.time() - load_start:.2f}s")
     earliest_commit = ""
     
     for row in rows:
@@ -158,13 +163,35 @@ def process_commits(input_path: str = None, ref_repo_spec: str = None, target_re
     # Second pass: Look for similar commit titles in target tree
     target_branch = target_repo.get_current_branch()
     logger.debug(f"Target branch: {target_branch}")
+    
+    logger.info(f"Fetching target commits since {earliest_date.isoformat()}...")
+    fetch_start = time.time()
     target_commits = target_repo.get_commits_since(earliest_date, target_branch)
-    logger.info(f"Found {len(target_commits)} commits in target tree since {earliest_date.isoformat()}")
+    fetch_time = time.time() - fetch_start
+    logger.info(f"Found {len(target_commits)} commits in target tree in {fetch_time:.2f}s")
 
     logger.info("First pass checks for the 12 digit hash, second pass checks for the title match")
-    for commit in commits:
+    total_comparisons = len(commits) * len(target_commits)
+    logger.info(f"Starting comparison: {len(commits)} commits to check against {len(target_commits)} target commits")
+    logger.info(f"Estimated comparisons: {total_comparisons:,} (this may take a while for large datasets)")
+    
+    # Progress tracking
+    total_commits = len(commits)
+    progress_interval = max(1, total_commits // 20)  # Log progress every 5%
+    comparison_start = time.time()
+    
+    for idx, commit in enumerate(commits, 1):
         if commit.found_in_target:
             continue
+
+        # Log progress periodically
+        if idx % progress_interval == 0 or idx == total_commits:
+            elapsed = time.time() - comparison_start
+            percent = (idx / total_commits) * 100
+            rate = idx / elapsed if elapsed > 0 else 0
+            eta_seconds = (total_commits - idx) / rate if rate > 0 else 0
+            eta_str = f", ETA: {eta_seconds/60:.1f}m" if eta_seconds > 0 else ""
+            logger.info(f"Progress: {idx}/{total_commits} commits checked ({percent:.1f}%, {rate:.1f} commits/s{eta_str})")
 
         for target_hash, target_title in target_commits:
             if target_hash[:12] == commit.hash[:12]:
@@ -189,6 +216,9 @@ def process_commits(input_path: str = None, ref_repo_spec: str = None, target_re
                 # print(f"Similarity: {similarity:.2f}")
                 break
 
+    comparison_time = time.time() - comparison_start
+    logger.info(f"Comparison complete in {comparison_time:.2f}s ({comparison_time/60:.2f}m)")
+    
     # Print summary
     found_exact = sum(1 for c in commits if c.found_in_target)
     found_title = sum(
@@ -200,6 +230,9 @@ def process_commits(input_path: str = None, ref_repo_spec: str = None, target_re
     logger.info(f"Commits found by hash: {found_exact}")
     logger.info(f"Additional commits found by title: {found_title}")
     logger.info(f"Commits not found: {not_found}")
+    
+    total_time = time.time() - start_time
+    logger.info(f"Total process time: {total_time:.2f}s ({total_time/60:.2f}m)")
 
     return commits
 
