@@ -340,9 +340,138 @@ def process_commit_details(commit: dict, body_lines: list, team_emails: list, by
                 if email in team_emails:
                     by_type[category][commit_hash] = subject
 
-def categorize_commit(commit_hash: str, message: str, repo: GitRepo) -> dict:
-    """Categorize a commit based on its message."""
+def analyze_subsystem_contributions(
+    repo_path: str,
+    subsystem_paths: list,
+    team_emails: list,
+    since_date: str = None,
+    until_date: str = None
+) -> dict:
+    """
+    Analyze team contributions to a specific subsystem (e.g., fs/smb/client).
+    
+    Returns both team contributions and total contributions to calculate percentage.
+    
+    Args:
+        repo_path: Path to git repository
+        subsystem_paths: List of paths to analyze (e.g., ['fs/smb/client', 'fs/cifs'])
+        team_emails: List of team member email addresses
+        since_date: Start date for analysis (YYYY-MM-DD)
+        until_date: End date for analysis (YYYY-MM-DD)
+    
+    Returns:
+        dict with:
+        - total_commits: Total commits to subsystem
+        - team_commits: Commits with team involvement
+        - team_percentage: Percentage of team involvement
+        - breakdown: Detailed breakdown by contribution type
+        - team_members: Individual contributions per team member
+    """
+    repo = GitRepo(repo_path)
+    
+    # Get total commits to subsystem
+    total_git_args = ['log', '--format=%H|%s|%ae|%ad', '--date=short', '--no-merges']
+    if since_date:
+        total_git_args.append(f'--since={since_date}')
+    if until_date:
+        total_git_args.append(f'--until={until_date}')
+    total_git_args.append('--')
+    total_git_args.extend(subsystem_paths)
+    
+    total_output = repo.run_git(total_git_args)
+    total_commits = set()
+    for line in total_output.strip().split('\n'):
+        if line and '|' in line:
+            commit_hash = line.split('|', 1)[0]
+            if commit_hash:
+                total_commits.add(commit_hash)
+    
+    # Get team contributions to subsystem
+    team_result = analyze_team_contributions(
+        repo_path=repo_path,
+        team_emails=team_emails,
+        since_date=since_date,
+        until_date=until_date,
+        paths=subsystem_paths
+    )
+    
+    # Calculate totals
+    team_commit_set = set()
+    for email, data in team_result.items():
+        for commit_list in data['commits'].values():
+            team_commit_set.update(commit_list)
+    
+    # Calculate by_type breakdown
+    by_type = {
+        'authored': 0,
+        'reviewed_by': 0,
+        'tested_by': 0,
+        'reported_by': 0,
+        'acked_by': 0,
+        'suggested_by': 0
+    }
+    for email, data in team_result.items():
+        for contrib_type in by_type.keys():
+            by_type[contrib_type] += data.get(contrib_type, 0)
+    
+    team_count = len(team_commit_set)
+    total_count = len(total_commits)
+    percentage = (team_count / total_count * 100) if total_count > 0 else 0
+    
+    return {
+        'subsystem_paths': subsystem_paths,
+        'total_commits': total_count,
+        'team_commits': team_count,
+        'team_percentage': round(percentage, 2),
+        'other_commits': total_count - team_count,
+        'breakdown': by_type,
+        'team_members': {
+            email: {
+                'total_commits': data['total_unique_commits'],
+                'by_type': {
+                    'authored': data['authored'],
+                    'reviewed_by': data['reviewed_by'],
+                    'tested_by': data['tested_by'],
+                    'reported_by': data['reported_by'],
+                    'acked_by': data['acked_by'],
+                    'suggested_by': data['suggested_by']
+                }
+            }
+            for email, data in team_result.items()
+        }
+    }
+
+def get_commit_files(commit_hash: str, repo: GitRepo) -> set:
+    """Get the set of files modified by a commit."""
+    try:
+        output = repo.run_git(['show', '--name-only', '--format=', commit_hash])
+        files = set()
+        for line in output.strip().split('\n'):
+            line = line.strip()
+            if line:
+                files.add(line)
+        return files
+    except:
+        return set()
+
+def commit_touches_paths(files: set, paths: list) -> bool:
+    """Check if commit modifies files under any of the provided paths."""
+    if not paths:
+        return True
+
+    for file_path in files:
+        for tracked_path in paths:
+            if file_path.startswith(tracked_path):
+                return True
+    return False
+
+def categorize_commit(commit_hash: str, message: str, repo: GitRepo, paths: list = None) -> dict:
+    """Categorize a commit based on its message and files changed."""
     message_lower = message.lower()
+    
+    # Get files modified by this commit
+    files_changed = get_commit_files(commit_hash, repo)
+    in_tracked_paths = commit_touches_paths(files_changed, paths)
     
     # Determine if it's a fix or feature
     fixes_hash = extract_fixes_hash(message)
@@ -364,11 +493,13 @@ def categorize_commit(commit_hash: str, message: str, repo: GitRepo) -> dict:
             if re.search(pattern, message_lower):
                 issue_types.append(issue_type)
     
-    # Categorize feature areas
+    # Categorize feature areas only for commits in the tracked paths.
+    # If no paths are provided, all commits are considered in scope.
     feature_areas = []
-    for area, pattern in FEATURE_PATTERNS.items():
-        if re.search(pattern, message_lower):
-            feature_areas.append(area)
+    if in_tracked_paths:
+        for area, pattern in FEATURE_PATTERNS.items():
+            if re.search(pattern, message_lower):
+                feature_areas.append(area)
     
     # Extract keywords
     keywords = []
@@ -381,10 +512,11 @@ def categorize_commit(commit_hash: str, message: str, repo: GitRepo) -> dict:
     return {
         'category': category,
         'issue_type': ','.join(issue_types) if issue_types else None,
-        'feature_area': ','.join(feature_areas) if feature_areas else None,
+        'feature_area': ','.join(feature_areas) if feature_areas and in_tracked_paths else None,
         'keywords': json.dumps(keywords),
         'fixes_commit': fixes_hash,
         'cc_stable': cc_stable,
+        'in_tracked_paths': in_tracked_paths,
     }
 
 def init_database(db_path: str):
@@ -394,7 +526,7 @@ def init_database(db_path: str):
     conn.commit()
     return conn
 
-def populate_database(db_path: str, analysis_file: str, mainline_repo_path: str):
+def populate_database(db_path: str, analysis_file: str, mainline_repo_path: str, paths: list = None):
     """Populate database with categorized commits."""
     print(f"Initializing database: {db_path}")
     conn = init_database(db_path)
@@ -404,13 +536,14 @@ def populate_database(db_path: str, analysis_file: str, mainline_repo_path: str)
         commits = json.load(f)
     
     print(f"Connecting to mainline repository: {mainline_repo_path}")
-    repo = GitRepo(mainline_repo_path, paths=['fs/smb/client/', 'fs/cifs/', 'fs/netfs/'])
+    repo = GitRepo(mainline_repo_path, paths=paths)
     
     print(f"\nAnalyzing and categorizing {len(commits)} commits...")
     print("-" * 80)
     
     analyzed_count = 0
     error_count = 0
+    skipped_count = 0
     
     for i, commit_data in enumerate(commits, 1):
         commit_hash = commit_data['commit']
@@ -418,14 +551,30 @@ def populate_database(db_path: str, analysis_file: str, mainline_repo_path: str)
         if i % 100 == 0 or i == len(commits):
             percent = (i / len(commits)) * 100
             print(f"Progress: {i}/{len(commits)} commits ({percent:.1f}%) - "
-                  f"Analyzed: {analyzed_count}, Errors: {error_count}")
+                  f"Analyzed: {analyzed_count}, Skipped: {skipped_count}, Errors: {error_count}")
         
         try:
             # Get full commit message
             message = repo.run_git(['log', '-1', '--format=%B', commit_hash])
             
             # Categorize
-            categorization = categorize_commit(commit_hash, message, repo)
+            categorization = categorize_commit(commit_hash, message, repo, paths=paths)
+            
+            # Skip commits outside tracked paths only when paths are provided.
+            if paths and not categorization['in_tracked_paths']:
+                skipped_count += 1
+                continue
+            
+            # Map the analysis data fields to database fields
+            in_stable = commit_data.get('in_stable', 0)
+            # Convert 'exists_in_target' field if present (from scan_and_compare output)
+            if commit_data.get('exists_in_target') == 'yes':
+                in_stable = 1
+            elif commit_data.get('exists_in_target') == 'no':
+                in_stable = 0
+            
+            likely_in_stable = commit_data.get('likely_in_stable', 0)
+            matching_hash = commit_data.get('matching_target_hash', commit_data.get('matching_hash', ''))
             
             # Insert into database
             conn.execute("""
@@ -441,9 +590,9 @@ def populate_database(db_path: str, analysis_file: str, mainline_repo_path: str)
                 commit_data['patch_name'],
                 commit_data['date'],
                 commit_data['release'],
-                commit_data['in_stable'],
-                commit_data['likely_in_stable'],
-                commit_data['matching_hash'],
+                in_stable,
+                likely_in_stable,
+                matching_hash,
                 categorization['category'],
                 categorization['issue_type'],
                 categorization['feature_area'],
@@ -467,6 +616,10 @@ def populate_database(db_path: str, analysis_file: str, mainline_repo_path: str)
     print("-" * 80)
     print(f"\n✓ Analysis complete!")
     print(f"  Successfully analyzed: {analyzed_count}")
+    if paths:
+        print(f"  Skipped (outside tracked paths): {skipped_count}")
+    else:
+        print(f"  Skipped: {skipped_count}")
     print(f"  Errors: {error_count}")
     
     # Print summary statistics
@@ -545,7 +698,8 @@ if __name__ == '__main__':
     parser.add_argument('--analysis-file', required=True, help='JSON file with analysis results')
     parser.add_argument('--db-path', required=True, help='SQLite database path')
     parser.add_argument('--mainline-repo', required=True, help='Path to mainline kernel repo')
+    parser.add_argument('--paths', nargs='+', default=None, help='Optional list of paths to restrict categorization')
     
     args = parser.parse_args()
     
-    populate_database(args.db_path, args.analysis_file, args.mainline_repo)
+    populate_database(args.db_path, args.analysis_file, args.mainline_repo, paths=args.paths)
