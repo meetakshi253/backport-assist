@@ -278,6 +278,46 @@ Get detailed commit messages for team contributions grouped by contribution type
 - Verify contribution counts
 - Export commit lists for further analysis
 
+### 8. analyze_subsystem_contributions
+
+Analyze what percentage of commits to a specific kernel subsystem came from a team.
+
+**Parameters:**
+- `repo_path` (required): Absolute path to kernel repository
+- `subsystem_paths` (required): Array of paths to analyze (e.g., `["fs/smb/client/", "fs/cifs/"]`)
+- `team_emails` (required): Array of team member email addresses
+- `since_date` (optional): Start date in YYYY-MM-DD format
+- `until_date` (optional): End date in YYYY-MM-DD format
+
+**Example:**
+```json
+{
+  "repo_path": "/home/user/linux",
+  "subsystem_paths": ["fs/smb/client/", "fs/cifs/"],
+  "team_emails": [
+    "sprasad@microsoft.com",
+    "bharathsm@microsoft.com",
+    "msetiya@microsoft.com"
+  ],
+  "since_date": "2024-04-01",
+  "until_date": "2026-04-01"
+}
+```
+
+**Returns:** 
+- Total commits to the subsystem
+- Number of commits with team involvement (any contribution type)
+- Percentage of team contributions
+- Breakdown by contribution type (authored, reviewed, etc.)
+- Individual contributions per team member
+
+**Use cases:**
+- Measure team ownership of a subsystem
+- Calculate contribution percentages for reports
+- Understand team's impact on specific kernel areas
+- Compare team vs. community contributions
+- Track subsystem maintenance responsibility
+
 ### 8. categorize_commits
 
 Categorize commits from backport analysis results into fixes vs features.

@@ -22,7 +22,8 @@ from commit_scanner import CommitScanner, get_cifs_commits
 from compare_trees import load_commits_from_file, process_commits
 from categorize_commits import (
     populate_database, init_database,
-    analyze_team_contributions, get_team_contribution_details
+    analyze_team_contributions, get_team_contribution_details,
+    analyze_subsystem_contributions
 )
 from query_commits import CommitDatabase
 
@@ -342,6 +343,12 @@ async def list_tools() -> list[Tool]:
                     "mainline_repo": {
                         "type": "string",
                         "description": "Path to mainline kernel repository for fetching commit messages"
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional paths to restrict categorization scope (e.g., ['fs/smb/client/', 'fs/cifs/'])",
+                        "default": None
                     }
                 },
                 "required": ["analysis_file", "db_path", "mainline_repo"]
@@ -558,6 +565,42 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["repo_path", "team_emails"]
             }
+        ),
+        Tool(
+            name="analyze_subsystem_contributions",
+            description="""Analyze team contributions to a specific kernel subsystem.
+            
+            Calculates what percentage of commits to a subsystem (e.g., SMB client) 
+            came from the team, including all contribution types. Returns both 
+            absolute numbers and percentages.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "repo_path": {
+                        "type": "string",
+                        "description": "Absolute path to kernel repository"
+                    },
+                    "subsystem_paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Paths to analyze (e.g., ['fs/smb/client/', 'fs/cifs/'])"
+                    },
+                    "team_emails": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of team member email addresses to track"
+                    },
+                    "since_date": {
+                        "type": "string",
+                        "description": "Start date in YYYY-MM-DD format (optional)"
+                    },
+                    "until_date": {
+                        "type": "string",
+                        "description": "End date in YYYY-MM-DD format (optional)"
+                    }
+                },
+                "required": ["repo_path", "subsystem_paths", "team_emails"]
+            }
         )
     ]
 
@@ -593,6 +636,8 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             return await handle_analyze_team_contributions(arguments)
         elif name == "get_team_commit_details":
             return await handle_get_team_commit_details(arguments)
+        elif name == "analyze_subsystem_contributions":
+            return await handle_analyze_subsystem_contributions(arguments)
         else:
             raise ValueError(f"Unknown tool: {name}")
     
@@ -933,6 +978,7 @@ async def handle_categorize_commits(args: dict) -> list[TextContent]:
     analysis_file = args["analysis_file"]
     db_path = args["db_path"]
     mainline_repo = args["mainline_repo"]
+    paths = args.get("paths")
     
     # Validate analysis file exists
     if not os.path.isfile(analysis_file):
@@ -946,7 +992,7 @@ async def handle_categorize_commits(args: dict) -> list[TextContent]:
     
     # Run categorization
     try:
-        populate_database(db_path, analysis_file, mainline_repo)
+        populate_database(db_path, analysis_file, mainline_repo, paths=paths)
         
         # Get stats for summary
         db = CommitDatabase(db_path)
@@ -1352,6 +1398,94 @@ async def handle_get_team_commit_details(args: dict) -> list[TextContent]:
             for commit_hash, subject in sorted(commits.items()):
                 output_lines.append(f"{commit_hash} {subject}")
             
+            output_lines.append("")
+    
+    return [TextContent(type="text", text="\n".join(output_lines))]
+
+
+async def handle_analyze_subsystem_contributions(args: dict) -> list[TextContent]:
+    """Handle analyze_subsystem_contributions tool call."""
+    repo_path = args["repo_path"]
+    subsystem_paths = args["subsystem_paths"]
+    team_emails = args["team_emails"]
+    since_date = args.get("since_date")
+    until_date = args.get("until_date")
+    
+    # Validate repository exists
+    if not os.path.isdir(repo_path):
+        raise ValueError(f"Repository path does not exist: {repo_path}")
+    
+    # Validate inputs
+    if not subsystem_paths or not isinstance(subsystem_paths, list):
+        raise ValueError("subsystem_paths must be a non-empty list")
+    if not team_emails or not isinstance(team_emails, list):
+        raise ValueError("team_emails must be a non-empty list")
+    
+    logger.info(f"Analyzing subsystem contributions for {len(team_emails)} team members in {len(subsystem_paths)} paths")
+    
+    # Analyze subsystem contributions
+    result = analyze_subsystem_contributions(
+        repo_path=repo_path,
+        subsystem_paths=subsystem_paths,
+        team_emails=team_emails,
+        since_date=since_date,
+        until_date=until_date
+    )
+    
+    # Format output
+    output_lines = [
+        "Subsystem Contribution Analysis",
+        "=" * 70,
+        ""
+    ]
+    
+    # Add date range if specified
+    if since_date or until_date:
+        output_lines.append(f"Period: {since_date or 'beginning'} to {until_date or 'now'}")
+        output_lines.append("")
+    
+    # Add paths
+    output_lines.append("Analyzed paths:")
+    for path in result['subsystem_paths']:
+        output_lines.append(f"  - {path}")
+    output_lines.extend(["", "=" * 70, ""])
+    
+    # Overall statistics
+    output_lines.extend([
+        "Overall Statistics:",
+        f"  Total commits to subsystem: {result['total_commits']}",
+        f"  Team contributions: {result['team_commits']}",
+        f"  Other contributions: {result['other_commits']}",
+        f"  Team percentage: {result['team_percentage']}%",
+        "",
+        "=" * 70,
+        ""
+    ])
+    
+    # Breakdown by contribution type
+    output_lines.append("Team Contributions by Type:")
+    breakdown = result['breakdown']
+    for contrib_type in ['authored', 'reviewed_by', 'tested_by', 'reported_by', 'acked_by', 'suggested_by']:
+        count = breakdown.get(contrib_type, 0)
+        if count > 0:
+            display_name = contrib_type.replace('_', '-').title()
+            output_lines.append(f"  {display_name}: {count}")
+    
+    output_lines.extend(["", "=" * 70, ""])
+    
+    # Individual team member contributions
+    output_lines.append("Individual Team Member Contributions:")
+    output_lines.append("")
+    
+    for email, data in sorted(result['team_members'].items(), 
+                             key=lambda x: x[1]['total_commits'], 
+                             reverse=True):
+        if data['total_commits'] > 0:
+            output_lines.append(f"{email}: {data['total_commits']} commits")
+            for contrib_type, count in data['by_type'].items():
+                if count > 0:
+                    display_name = contrib_type.replace('_', '-').title()
+                    output_lines.append(f"  - {display_name}: {count}")
             output_lines.append("")
     
     return [TextContent(type="text", text="\n".join(output_lines))]
